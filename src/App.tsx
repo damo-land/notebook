@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import {
   createNote,
   getVaultDir,
@@ -13,6 +14,7 @@ import { parseDateEntry } from "./lib/date-entry";
 import { onOpenNote } from "./lib/note-editor-bus";
 import { CommandPalette, type CommandItem } from "./components/command-palette";
 import { NoteEditor } from "./components/note-editor";
+import { TasksView } from "./components/tasks-view";
 import "./App.css";
 
 type Mode = "plain" | "task" | "knowledge";
@@ -47,6 +49,11 @@ function App() {
   // replaces the capture UI entirely, so capture's keydown chain (palette,
   // field menu, mode Esc, Enter-saves) is unmounted and cannot fire.
   const [editing, setEditing] = useState<Note | null>(null);
+  // Top-level view: capture UI (default) or the T8 tasks list. Orthogonal to
+  // `mode` (capture state persists underneath) and below `editing` in render
+  // priority — Enter on a task opens the editor over the tasks view, and
+  // closing the editor drops back into it.
+  const [view, setView] = useState<"capture" | "tasks">("capture");
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const vaultDirRef = useRef<string | null>(null);
@@ -68,6 +75,19 @@ function App() {
     void (async () => {
       vaultDirRef.current = await getVaultDir(tauriVaultFs, await homeDir());
     })();
+  }, []);
+
+  // Tasks-view hotkey: the Rust handler (TASKS_VIEW_SHORTCUT) shows the
+  // panel and emits this event; switch straight to the tasks view, closing
+  // any open editor so the list is what the user sees.
+  useEffect(() => {
+    const unlisten = listen("open-tasks-view", () => {
+      setEditing(null);
+      setView("tasks");
+    });
+    return () => {
+      void unlisten.then((f) => f());
+    };
   }, []);
 
   // Re-focus the input whenever the overlay window is shown/focused.
@@ -289,6 +309,14 @@ function App() {
           onSave={(newBody) => void saveEdit(editing, newBody)}
           onClose={() => setEditing(null)} // Esc: discard draft, back to capture
         />
+      </main>
+    );
+  }
+
+  if (view === "tasks") {
+    return (
+      <main className="overlay">
+        <TasksView onClose={() => setView("capture")} />
       </main>
     );
   }
