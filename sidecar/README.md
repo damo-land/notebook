@@ -81,6 +81,60 @@ spawning the sidecar, and `llm.ts` deletes it from the environment (with a
 stderr warning) before calling the SDK, so billing always stays on the
 subscription.
 
+## MCP server
+
+`src/mcp.ts` is a separate entry point: a stdio [MCP](https://modelcontextprotocol.io)
+server exposing the notebook vault to MCP clients such as Claude Code.
+Read-only in v1 — it never writes to the vault.
+
+Vault dir resolution matches the app: `NOTEBOOK_VAULT_DIR` env override (used
+by tests), else `~/.config/notebook/config.json` `vaultDir`, else `~/Notebook`.
+It reads the markdown files directly (no SQLite index involved).
+
+### Tools
+
+| tool           | args                  | returns                                                        |
+| -------------- | --------------------- | -------------------------------------------------------------- |
+| `search_notes` | `{ query }`           | case-insensitive substring match over body/title/tags; matches with id, title, kind, snippet |
+| `read_note`    | `{ id_or_path }`      | frontmatter + full body; paths outside the vault are rejected  |
+| `list_tasks`   | —                     | open tasks (`kind: task`, not done), deadline asc, no-deadline last |
+| `list_recent`  | `{ n }` (default 10)  | n most recent notes by `created`, newest first                 |
+
+### Registering with Claude Code
+
+Run `npm run sidecar:install` first — the command below points straight into
+`sidecar/node_modules/`, so the dependencies have to be installed already.
+
+```
+claude mcp add notebook -- node --import /ABSOLUTE/PATH/TO/REPO/sidecar/node_modules/tsx/dist/loader.mjs /ABSOLUTE/PATH/TO/REPO/sidecar/src/mcp.ts
+```
+
+Replace `/ABSOLUTE/PATH/TO/REPO` in **both** places with your checkout path
+(the output of `pwd` at the repo root). Both are absolute on purpose: Claude
+Code spawns MCP servers from an arbitrary working directory, so a bare
+`--import tsx` specifier would be resolved against that directory and fail
+with `ERR_MODULE_NOT_FOUND`.
+
+For the same reason, do not register `npm run sidecar:mcp` (or
+`npm --prefix … run mcp`) as the server command. That script is a manual
+convenience only — npm prints its `> notebook-sidecar@0.1.0 mcp` banner to
+stdout, which is the JSON-RPC channel, and corrupts the stream.
+
+After adding, verify with `claude mcp list`. The tools are then callable from
+Claude Code as `mcp__notebook__search_notes`, `mcp__notebook__read_note`,
+`mcp__notebook__list_tasks` and `mcp__notebook__list_recent`.
+
+### Demo / proof
+
+```
+npm run sidecar:mcp:demo
+```
+
+Spawns the MCP server against a temp vault (`NOTEBOOK_VAULT_DIR`), performs
+the MCP handshake with the SDK client, calls all four tools and asserts the
+matching note content comes back (`sidecar/scripts/mcp-demo.ts`). Exits 0 on
+success.
+
 ## Smoke test
 
 From the repo root:
