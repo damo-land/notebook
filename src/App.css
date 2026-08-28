@@ -22,6 +22,13 @@ body {
   padding: 16px;
 }
 
+.capture {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
 .overlay-input {
   width: 100%;
   padding: 12px 14px;
@@ -34,4 +41,124 @@ body {
   border-radius: 8px;
   outline: none;
   resize: none;
+}
+
+/* command palette / field selector */
+.palette {
+  list-style: none;
+  background: #2a2a2a;
+  border: 1px solid #3a3a3a;
+  border-radius: 8px;
+  overflow: hidden;
+  font-size: 14px;
+}
+
+.palette-empty {
+  padding: 8px 14px;
+  color: #6a6a6a;
+}
+
+.palette-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 7px 14px;
+}
+
+.palette-item-selected {
+  background: #3a3f4a;
+}
+
+.palette-item-disabled {
+  color: #6a6a6a;
+}
+
+.palette-label {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.palette-hint {
+  margin-left: auto;
+  font-size: 12px;
+  color: #8a8a8a;
+}
+
+/* mode chips (kind indicator, deadline, category) */
+.chips {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.chip {
+  padding: 2px 10px;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: #2a2a2a;
+  border: 1px solid #3a3a3a;
+  border-radius: 999px;
+  color: #c8c8c8;
+}
+
+.chip-kind {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.chip-task {
+  border-color: #7a5b2a;
+  color: #e8b45a;
+}
+
+.chip-knowledge {
+  border-color: #2a5b7a;
+  color: #5ab4e8;
+}
+
+.chip-invalid {
+  border-color: #7a3a3a;
+  color: #e87a7a;
+}
+
+.chip-hint {
+  font-size: 12px;
+  color: #6a6a6a;
+}
+
+/* inline field editor (deadline / category) */
+.field-editor {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px;
+  background: #2a2a2a;
+  border: 1px solid #3a3a3a;
+  border-radius: 8px;
+}
+
+.field-label {
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #8a8a8a;
+}
+
+.field-input {
+  flex: 1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 14px;
+  color: inherit;
+  background: transparent;
+  border: none;
+  outline: none;
+}
+
+.field-parse {
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #7ac87a;
+}
+
+.field-parse-bad {
+  color: #e87a7a;
 }
