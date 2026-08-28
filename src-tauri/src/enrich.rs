@@ -97,8 +97,13 @@ fn related_candidates(
 /// A file we cannot read counts as enriched: skipping it is safer than
 /// queueing a job that would fail on every pass.
 fn already_enriched(path: &Path) -> bool {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return true;
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        // Silent exclusion is the one thing worse than skipping it.
+        Err(e) => {
+            eprintln!("[enrich] skipping unreadable note {}: {e}", path.display());
+            return true;
+        }
     };
     let (data, _tags, _body) = parse_note_file(&text);
     data.get("enriched").is_some_and(|v| !v.is_empty())

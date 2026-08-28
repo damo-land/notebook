@@ -306,14 +306,25 @@ fn spawn_enrich_worker(
             });
             match reply {
                 Ok(line) => {
-                    let ok = serde_json::from_str::<serde_json::Value>(&line)
-                        .ok()
+                    let parsed = serde_json::from_str::<serde_json::Value>(&line).ok();
+                    let ok = parsed
+                        .as_ref()
                         .and_then(|v| v.get("ok").and_then(|b| b.as_bool()))
                         .unwrap_or(false);
-                    if ok {
-                        eprintln!("[enrich] {}: {line}", job.id);
-                    } else {
-                        eprintln!("[enrich] {}: job failed, note left untouched: {line}", job.id);
+                    // `ok: true` covers both "wrote the marker" and "did
+                    // nothing" — distinguish them, because a skip means this
+                    // note is done for the session while the job log is the
+                    // only place that says why.
+                    let status = parsed
+                        .as_ref()
+                        .and_then(|v| v.pointer("/result/status").and_then(|s| s.as_str()))
+                        .unwrap_or("unknown");
+                    match (ok, status) {
+                        (true, "enriched") => eprintln!("[enrich] {}: enriched: {line}", job.id),
+                        (true, _) => eprintln!("[enrich] {}: skipped, note unchanged: {line}", job.id),
+                        (false, _) => {
+                            eprintln!("[enrich] {}: job failed, note left untouched: {line}", job.id)
+                        }
                     }
                 }
                 // Sidecar unreachable / dead / timed out: the note on disk is
