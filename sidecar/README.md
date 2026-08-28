@@ -81,6 +81,47 @@ spawning the sidecar, and `llm.ts` deletes it from the environment (with a
 stderr warning) before calling the SDK, so billing always stays on the
 subscription.
 
+## MCP server
+
+`src/mcp.ts` is a separate entry point: a stdio [MCP](https://modelcontextprotocol.io)
+server exposing the notebook vault to MCP clients such as Claude Code.
+Read-only in v1 — it never writes to the vault.
+
+Vault dir resolution matches the app: `NOTEBOOK_VAULT_DIR` env override (used
+by tests), else `~/.config/notebook/config.json` `vaultDir`, else `~/Notebook`.
+It reads the markdown files directly (no SQLite index involved).
+
+### Tools
+
+| tool           | args                  | returns                                                        |
+| -------------- | --------------------- | -------------------------------------------------------------- |
+| `search_notes` | `{ query }`           | case-insensitive substring match over body/title/tags; matches with id, title, kind, snippet |
+| `read_note`    | `{ id_or_path }`      | frontmatter + full body; paths outside the vault are rejected  |
+| `list_tasks`   | —                     | open tasks (`kind: task`, not done), deadline asc, no-deadline last |
+| `list_recent`  | `{ n }` (default 10)  | n most recent notes by `created`, newest first                 |
+
+### Registering with Claude Code
+
+```
+claude mcp add notebook -- node --import tsx /ABSOLUTE/PATH/TO/REPO/sidecar/src/mcp.ts
+```
+
+Replace `/ABSOLUTE/PATH/TO/REPO` with your checkout path (e.g. the output of
+`pwd` at the repo root). Run `npm run sidecar:install` first so `tsx` and the
+MCP SDK are present. After adding, the tools are callable from Claude Code as
+`mcp__notebook__search_notes` etc.; verify with `claude mcp list`.
+
+### Demo / proof
+
+```
+npm run sidecar:mcp:demo
+```
+
+Spawns the MCP server against a temp vault (`NOTEBOOK_VAULT_DIR`), performs
+the MCP handshake with the SDK client, calls all four tools and asserts the
+matching note content comes back (`sidecar/scripts/mcp-demo.ts`). Exits 0 on
+success.
+
 ## Smoke test
 
 From the repo root:

@@ -10,7 +10,9 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "sidecar:install": "npm --prefix sidecar install",
-    "sidecar:smoke": "npm --prefix sidecar run smoke"
+    "sidecar:smoke": "npm --prefix sidecar run smoke",
+    "sidecar:mcp": "npm --prefix sidecar run mcp",
+    "sidecar:mcp:demo": "npm --prefix sidecar run mcp:demo"
   },
   "dependencies": {
     "react": "^19.1.0",
