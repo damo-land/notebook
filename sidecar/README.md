@@ -102,14 +102,27 @@ It reads the markdown files directly (no SQLite index involved).
 
 ### Registering with Claude Code
 
+Run `npm run sidecar:install` first — the command below points straight into
+`sidecar/node_modules/`, so the dependencies have to be installed already.
+
 ```
-claude mcp add notebook -- node --import tsx /ABSOLUTE/PATH/TO/REPO/sidecar/src/mcp.ts
+claude mcp add notebook -- node --import /ABSOLUTE/PATH/TO/REPO/sidecar/node_modules/tsx/dist/loader.mjs /ABSOLUTE/PATH/TO/REPO/sidecar/src/mcp.ts
 ```
 
-Replace `/ABSOLUTE/PATH/TO/REPO` with your checkout path (e.g. the output of
-`pwd` at the repo root). Run `npm run sidecar:install` first so `tsx` and the
-MCP SDK are present. After adding, the tools are callable from Claude Code as
-`mcp__notebook__search_notes` etc.; verify with `claude mcp list`.
+Replace `/ABSOLUTE/PATH/TO/REPO` in **both** places with your checkout path
+(the output of `pwd` at the repo root). Both are absolute on purpose: Claude
+Code spawns MCP servers from an arbitrary working directory, so a bare
+`--import tsx` specifier would be resolved against that directory and fail
+with `ERR_MODULE_NOT_FOUND`.
+
+For the same reason, do not register `npm run sidecar:mcp` (or
+`npm --prefix … run mcp`) as the server command. That script is a manual
+convenience only — npm prints its `> notebook-sidecar@0.1.0 mcp` banner to
+stdout, which is the JSON-RPC channel, and corrupts the stream.
+
+After adding, verify with `claude mcp list`. The tools are then callable from
+Claude Code as `mcp__notebook__search_notes`, `mcp__notebook__read_note`,
+`mcp__notebook__list_tasks` and `mcp__notebook__list_recent`.
 
 ### Demo / proof
 
