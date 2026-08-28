@@ -1,14 +1,54 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { createNote, getVaultDir } from "./lib/vault";
+import { createNote, getVaultDir, type NoteKind } from "./lib/vault";
 import { homeDir, tauriVaultFs } from "./lib/vault-fs";
+import { parseDateEntry } from "./lib/date-entry";
+import { CommandPalette, type CommandItem } from "./components/command-palette";
 import "./App.css";
 
+type Mode = "plain" | "task" | "knowledge";
+type FieldId = "deadline" | "category";
+
+// `/` palette in plain capture. search/chat are placeholders until their
+// tasks land: shown greyed, never selectable.
+const COMMANDS: CommandItem[] = [
+  { id: "task", label: "task", hint: "capture a task" },
+  { id: "knowledge", label: "knowledge", hint: "capture knowledge" },
+  { id: "search", label: "search", hint: "coming soon", disabled: true },
+  { id: "chat", label: "chat", hint: "coming soon", disabled: true },
+];
+
+// `/` field selector inside task mode.
+const TASK_FIELDS: CommandItem[] = [
+  { id: "deadline", label: "deadline", hint: "fri, 2026-09-03, +3d" },
+  { id: "category", label: "category", hint: "single tag" },
+];
+
 function App() {
+  const [mode, setMode] = useState<Mode>("plain");
   const [body, setBody] = useState("");
+  const [paletteIndex, setPaletteIndex] = useState(0);
+  const [fieldMenuOpen, setFieldMenuOpen] = useState(false);
+  const [fieldMenuIndex, setFieldMenuIndex] = useState(0);
+  const [editingField, setEditingField] = useState<FieldId | null>(null);
+  const [fieldText, setFieldText] = useState("");
+  const [deadline, setDeadline] = useState<{ raw: string; iso: string | null } | null>(null);
+  const [category, setCategory] = useState<string | null>(null);
+
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const vaultDirRef = useRef<string | null>(null);
   const savingRef = useRef(false);
+
+  // Palette is derived state: open while plain capture holds a single line
+  // starting with "/" (i.e. "/" was typed into an empty input). Clearing the
+  // body (Esc) or a newline closes it.
+  const paletteOpen = mode === "plain" && body.startsWith("/") && !body.includes("\n");
+  const paletteQuery = paletteOpen ? body.slice(1).toLowerCase() : "";
+  const paletteItems = COMMANDS.filter((c) => c.label.startsWith(paletteQuery));
+  const paletteSelectable = paletteItems.filter((c) => !c.disabled);
+  const paletteSelected =
+    paletteSelectable[Math.min(paletteIndex, Math.max(paletteSelectable.length - 1, 0))] ?? null;
+  const fieldSelected = TASK_FIELDS[fieldMenuIndex] ?? null;
 
   // Resolve the vault dir once at startup.
   useEffect(() => {
@@ -24,46 +64,232 @@ function App() {
     return () => window.removeEventListener("focus", focus);
   }, []);
 
-  const save = useCallback(async (text: string) => {
-    // Guard: empty (or whitespace-only) input creates no file.
-    if (text.trim() === "") return;
-    if (savingRef.current) return; // no double-save on repeated Enter
-    savingRef.current = true;
-    try {
-      const vaultDir = vaultDirRef.current ?? (await getVaultDir(tauriVaultFs, await homeDir()));
-      vaultDirRef.current = vaultDir;
-      // createNote awaits the write: the file is on disk before we continue.
-      await createNote(tauriVaultFs, vaultDir, { body: text, kind: "note" });
-      setBody("");
-      void invoke("hide_overlay");
-    } catch (err) {
-      console.error("capture failed:", err);
-    } finally {
-      savingRef.current = false;
-    }
+  /** Back to plain capture: mode + collected fields discarded, body kept. */
+  const resetToPlain = useCallback(() => {
+    setMode("plain");
+    setFieldMenuOpen(false);
+    setFieldMenuIndex(0);
+    setEditingField(null);
+    setFieldText("");
+    setDeadline(null);
+    setCategory(null);
   }, []);
 
-  const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // Enter saves; Shift+Enter falls through to insert a newline.
+  const save = useCallback(
+    async (text: string, kind: NoteKind, opts: { deadline?: string; tags?: string[] } = {}) => {
+      // Guard: empty (or whitespace-only) input creates no file.
+      if (text.trim() === "") return;
+      if (savingRef.current) return; // no double-save on repeated Enter
+      savingRef.current = true;
+      try {
+        const vaultDir = vaultDirRef.current ?? (await getVaultDir(tauriVaultFs, await homeDir()));
+        vaultDirRef.current = vaultDir;
+        // createNote awaits the write: the file is on disk before we continue.
+        await createNote(tauriVaultFs, vaultDir, {
+          body: text,
+          kind,
+          tags: opts.tags,
+          deadline: opts.deadline,
+        });
+        setBody("");
+        resetToPlain();
+        void invoke("hide_overlay");
+      } catch (err) {
+        console.error("capture failed:", err);
+      } finally {
+        savingRef.current = false;
+      }
+    },
+    [resetToPlain]
+  );
+
+  const enterMode = (next: Mode) => {
+    setMode(next);
+    setBody(""); // the "/command" text was palette input, not note body
+    setPaletteIndex(0);
+    textareaRef.current?.focus();
+  };
+
+  const onBodyKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // 1. Palette navigation (plain capture, menu open).
+    if (paletteOpen) {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        const n = paletteSelectable.length;
+        if (n > 0) {
+          setPaletteIndex((i) => (event.key === "ArrowDown" ? (i + 1) % n : (i - 1 + n) % n));
+        }
+        return;
+      }
+      if (event.key === "Enter") {
+        event.preventDefault();
+        if (paletteSelected) enterMode(paletteSelected.id as Mode);
+        return; // no selectable command -> Enter is a no-op, nothing saved
+      }
+      if (event.key === "Escape") {
+        // Close the palette (clearing the "/") — keep the overlay visible.
+        event.preventDefault();
+        event.stopPropagation();
+        setBody("");
+        setPaletteIndex(0);
+        return;
+      }
+      return;
+    }
+
+    // 2. In-mode field selector navigation.
+    if (fieldMenuOpen) {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        const n = TASK_FIELDS.length;
+        setFieldMenuIndex((i) => (event.key === "ArrowDown" ? (i + 1) % n : (i - 1 + n) % n));
+        return;
+      }
+      if (event.key === "Enter") {
+        event.preventDefault();
+        if (fieldSelected) {
+          setEditingField(fieldSelected.id as FieldId);
+          setFieldText("");
+        }
+        setFieldMenuOpen(false);
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        setFieldMenuOpen(false);
+        return;
+      }
+      return;
+    }
+
+    // 3. Esc inside a mode: back to plain capture, nothing saved. The overlay
+    // stays up — preventDefault/stopPropagation keep the global keymap
+    // (which hides the window) out of it. Plain mode falls through to it.
+    if (event.key === "Escape" && mode !== "plain") {
+      event.preventDefault();
+      event.stopPropagation();
+      resetToPlain();
+      return;
+    }
+
+    // 4. "/" at a line start inside task mode opens the field selector.
+    if (event.key === "/" && mode === "task") {
+      const el = event.currentTarget;
+      const pos = el.selectionStart;
+      const atLineStart = el.selectionEnd === pos && (pos === 0 || body[pos - 1] === "\n");
+      if (atLineStart) {
+        event.preventDefault();
+        setFieldMenuOpen(true);
+        setFieldMenuIndex(0);
+        return;
+      }
+    }
+
+    // 5. Enter saves; Shift+Enter falls through to insert a newline.
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      void save(body);
+      if (mode === "plain") {
+        void save(body, "note");
+      } else {
+        void save(body, mode, {
+          deadline: deadline?.iso ?? undefined, // unparsed deadline is not saved
+          tags: category ? [category] : undefined,
+        });
+      }
     }
   };
 
+  const closeFieldEditor = () => {
+    setEditingField(null);
+    setFieldText("");
+    textareaRef.current?.focus();
+  };
+
+  const onFieldKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      const text = fieldText.trim();
+      if (editingField === "deadline") {
+        setDeadline(text === "" ? null : { raw: text, iso: parseDateEntry(text) });
+      } else if (editingField === "category") {
+        setCategory(text === "" ? null : text);
+      }
+      closeFieldEditor();
+      return;
+    }
+    if (event.key === "Escape") {
+      // Discard this field's in-progress text; stay in the mode.
+      event.preventDefault();
+      event.stopPropagation();
+      closeFieldEditor();
+    }
+  };
+
+  const fieldParsed = editingField === "deadline" ? parseDateEntry(fieldText) : null;
+
   return (
     <main className="overlay">
-      <textarea
-        ref={textareaRef}
-        className="overlay-input"
-        placeholder="Type a note… (markdown, Enter to save)"
-        value={body}
-        onChange={(e) => setBody(e.target.value)}
-        onKeyDown={onKeyDown}
-        autoFocus
-        spellCheck={false}
-        rows={3}
-      />
+      <div className="capture">
+        {mode !== "plain" && (
+          <div className="chips">
+            <span className={`chip chip-kind chip-${mode}`}>{mode}</span>
+            {deadline &&
+              (deadline.iso ? (
+                <span className="chip">deadline {deadline.iso}</span>
+              ) : (
+                <span className="chip chip-invalid">deadline "{deadline.raw}" unparsed</span>
+              ))}
+            {category && <span className="chip">#{category}</span>}
+            {mode === "task" && !editingField && !fieldMenuOpen && (
+              <span className="chip-hint">/ for deadline · category</span>
+            )}
+          </div>
+        )}
+        <textarea
+          ref={textareaRef}
+          className="overlay-input"
+          placeholder={
+            mode === "plain"
+              ? "Type a note… (markdown, Enter to save, / for commands)"
+              : `Describe the ${mode}… (Enter to save, Esc to cancel)`
+          }
+          value={body}
+          onChange={(e) => {
+            setBody(e.target.value);
+            setPaletteIndex(0); // typing re-filters: selection back to top
+          }}
+          onKeyDown={onBodyKeyDown}
+          autoFocus
+          spellCheck={false}
+          rows={3}
+        />
+        {paletteOpen && (
+          <CommandPalette items={paletteItems} selectedId={paletteSelected?.id ?? null} />
+        )}
+        {fieldMenuOpen && (
+          <CommandPalette items={TASK_FIELDS} selectedId={fieldSelected?.id ?? null} />
+        )}
+        {editingField && (
+          <div className="field-editor">
+            <span className="field-label">{editingField}</span>
+            <input
+              className="field-input"
+              value={fieldText}
+              onChange={(e) => setFieldText(e.target.value)}
+              onKeyDown={onFieldKeyDown}
+              placeholder={editingField === "deadline" ? "fri · 2026-09-03 · +3d" : "tag name"}
+              autoFocus
+              spellCheck={false}
+            />
+            {editingField === "deadline" && fieldText.trim() !== "" && (
+              <span className={fieldParsed ? "field-parse" : "field-parse field-parse-bad"}>
+                {fieldParsed ? `${fieldText.trim()} → ${fieldParsed}` : "unparsed"}
+              </span>
+            )}
+          </div>
+        )}
+      </div>
     </main>
   );
 }
