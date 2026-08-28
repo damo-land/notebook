@@ -40,6 +40,41 @@ fn hide_overlay(app: AppHandle) {
     }
 }
 
+// Minimal filesystem bridge for the TS vault library (src/lib/vault): the
+// frontend's VaultFs is implemented over these commands. Plain std::fs; the
+// path clamp that keeps notes inside the vault lives in TS (notePath).
+
+#[tauri::command]
+fn vault_read_file(path: String) -> Result<String, String> {
+    std::fs::read_to_string(&path).map_err(|e| format!("read {path}: {e}"))
+}
+
+#[tauri::command]
+fn vault_write_file(path: String, data: String) -> Result<(), String> {
+    std::fs::write(&path, data).map_err(|e| format!("write {path}: {e}"))
+}
+
+#[tauri::command]
+fn vault_readdir(path: String) -> Result<Vec<String>, String> {
+    let entries = std::fs::read_dir(&path).map_err(|e| format!("readdir {path}: {e}"))?;
+    let mut names = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("readdir {path}: {e}"))?;
+        names.push(entry.file_name().to_string_lossy().into_owned());
+    }
+    Ok(names)
+}
+
+#[tauri::command]
+fn vault_mkdir(path: String) -> Result<(), String> {
+    std::fs::create_dir_all(&path).map_err(|e| format!("mkdir {path}: {e}"))
+}
+
+#[tauri::command]
+fn home_dir() -> Result<String, String> {
+    std::env::var("HOME").map_err(|e| format!("HOME: {e}"))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -55,7 +90,14 @@ pub fn run() {
                 })
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![hide_overlay])
+        .invoke_handler(tauri::generate_handler![
+            hide_overlay,
+            vault_read_file,
+            vault_write_file,
+            vault_readdir,
+            vault_mkdir,
+            home_dir
+        ])
         .setup(|app| {
             // Resident tray app: no dock icon.
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
