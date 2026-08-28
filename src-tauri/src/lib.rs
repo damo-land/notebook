@@ -1,7 +1,12 @@
+pub mod index;
+
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    AppHandle, Manager,
+    AppHandle, Manager, State,
 };
 use tauri_nspanel::{tauri_panel, ManagerExt, WebviewWindowExt};
 use tauri_plugin_global_shortcut::ShortcutState;
@@ -38,6 +43,41 @@ fn hide_overlay(app: AppHandle) {
     if let Ok(panel) = app.get_webview_panel(OVERLAY_WINDOW_LABEL) {
         panel.hide();
     }
+}
+
+/// SQLite index state. The watcher handle is held here to keep it alive.
+struct IndexState {
+    conn: Arc<Mutex<rusqlite::Connection>>,
+    vault_dir: PathBuf,
+    _watcher: Option<notify::RecommendedWatcher>,
+}
+
+#[tauri::command]
+fn search_notes(state: State<IndexState>, text: String) -> Result<Vec<index::NoteRow>, String> {
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    index::search_notes(&conn, &text).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_tasks(
+    state: State<IndexState>,
+    category: Option<String>,
+) -> Result<Vec<index::NoteRow>, String> {
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    index::list_tasks(&conn, category.as_deref()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn due_alerts(state: State<IndexState>, now: String) -> Result<Vec<index::NoteRow>, String> {
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    index::due_alerts(&conn, &now).map_err(|e| e.to_string())
+}
+
+/// Full rebuild: rescans the vault into the db. Returns the note count.
+#[tauri::command]
+fn reindex(state: State<IndexState>) -> Result<usize, String> {
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    index::reindex(&conn, &state.vault_dir).map_err(|e| e.to_string())
 }
 
 // Minimal filesystem bridge for the TS vault library (src/lib/vault): the
@@ -92,6 +132,10 @@ pub fn run() {
         )
         .invoke_handler(tauri::generate_handler![
             hide_overlay,
+            search_notes,
+            list_tasks,
+            due_alerts,
+            reindex,
             vault_read_file,
             vault_write_file,
             vault_readdir,
@@ -99,6 +143,29 @@ pub fn run() {
             home_dir
         ])
         .setup(|app| {
+            // SQLite index: db in app data dir (outside the vault), initial
+            // full scan on start, watcher-driven rescans on file change.
+            let db_path = app.path().app_data_dir()?.join("index.db");
+            let vault_dir = index::resolve_vault_dir(&app.path().home_dir()?);
+            let _ = std::fs::create_dir_all(&vault_dir);
+            let conn = index::open_db(&db_path)?;
+            if let Err(e) = index::reindex(&conn, &vault_dir) {
+                eprintln!("index: initial reindex failed: {e}");
+            }
+            let conn = Arc::new(Mutex::new(conn));
+            let watcher = match index::spawn_watcher(vault_dir.clone(), conn.clone()) {
+                Ok(w) => Some(w),
+                Err(e) => {
+                    eprintln!("index: vault watcher failed to start: {e}");
+                    None
+                }
+            };
+            app.manage(IndexState {
+                conn,
+                vault_dir,
+                _watcher: watcher,
+            });
+
             // Resident tray app: no dock icon.
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
