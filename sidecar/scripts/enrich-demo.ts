@@ -1,0 +1,441 @@
+// Proof script for knowledge-note enrichment (T12).
+//
+// Seeds a temp vault with a `kind: knowledge` note containing a public URL
+// plus two unrelated notes, runs the enrichment path over it, prints the
+// resulting note and asserts the acceptance criteria:
+//
+//   * the original body bytes are still present verbatim (byte comparison
+//     against the pre-enrichment body),
+//   * an appended `## Context` section exists,
+//   * `enriched` frontmatter is set,
+//   * at most 3 `[[wiki-links]]`, all to notes that exist,
+//   * the file still parses — with the TS parser AND with a mirror of the
+//     Rust parser's rules (src-tauri/src/index.rs parse_note_file).
+//
+// It also proves the failure-safe and idempotence paths, which have no other
+// mechanical proof on the sidecar side.
+//
+// Run (stubbed — no model call, no spend; this is the default):
+//     npm --prefix sidecar run enrich:demo
+// Run against the real LLM (one paid prompt, proves WebFetch/bookmark
+// behaviour end to end):
+//     npm --prefix sidecar run enrich:demo -- --real
+//
+// The stub path exists so this file's invariants — append-only, tag merging
+// and sanitising, the link cap, the `enriched` marker — can be re-verified by
+// anyone at any time without spending a prompt.
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  MAX_LINKS,
+  enrichNote,
+  parseNoteFile,
+  type EnrichDeps,
+  type RelatedNote,
+} from "../src/enrich.ts";
+
+const real = process.argv.includes("--real");
+
+let failures = 0;
+
+function assert(cond: boolean, msg: string): void {
+  if (!cond) {
+    console.error(`FAIL: ${msg}`);
+    failures++;
+    return;
+  }
+  console.log(`ok: ${msg}`);
+}
+
+// --- Rust parser mirror (src-tauri/src/index.rs parse_note_file) -------------
+//
+// The enriched file has to be readable by BOTH parsers. The Rust one is
+// stricter than the TS one in a way that matters here: it splits each
+// frontmatter line on the FIRST ':' and drops any key containing a space, so
+// an ISO timestamp or a bare URL as a value must survive the split.
+
+function parseLikeRust(text: string): { data: Record<string, string>; tags: string[]; body: string } {
+  const data: Record<string, string> = {};
+  let tags: string[] = [];
+  if (!text.startsWith("---\n")) return { data, tags, body: text };
+  const rest = text.slice(4);
+  const end = rest.indexOf("\n---\n");
+  if (end === -1) return { data, tags, body: text };
+  for (const line of rest.slice(0, end).split("\n")) {
+    const colon = line.indexOf(":");
+    if (colon === -1) continue;
+    const key = line.slice(0, colon).trim();
+    const value = line.slice(colon + 1).trim();
+    if (key === "" || key.includes(" ")) continue;
+    if (key === "tags") {
+      tags = value
+        .replace(/^\[/, "")
+        .replace(/\]$/, "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter((s) => s !== "");
+    } else {
+      data[key] = value;
+    }
+  }
+  return { data, tags, body: rest.slice(end + 5) };
+}
+
+// --- helpers -----------------------------------------------------------------
+
+/** Body bytes as they sit in the file, i.e. everything after the `---` block. */
+function bodyBytes(raw: Buffer): Buffer {
+  const marker = raw.indexOf("\n---\n");
+  return raw.subarray(marker + 5);
+}
+
+function countWikiLinks(text: string): string[] {
+  return [...text.matchAll(/\[\[([^\]]+)\]\]/g)].map((m) => m[1]);
+}
+
+function stubDeps(reply: string): EnrichDeps {
+  return { runPrompt: async () => reply };
+}
+
+async function seedNote(
+  vaultDir: string,
+  name: string,
+  frontmatter: string,
+  body: string,
+): Promise<string> {
+  const path = join(vaultDir, name);
+  await writeFile(path, `---\n${frontmatter}\n---\n${body}`, "utf8");
+  return path;
+}
+
+// --- scenario 1: the acceptance criteria, end to end -------------------------
+
+const PUBLIC_URL = "https://example.com";
+
+async function scenarioMain(): Promise<void> {
+  const vaultDir = await mkdtemp(join(tmpdir(), "notebook-enrich-demo-"));
+  console.log(`\n=== scenario: knowledge note + public URL (${real ? "REAL LLM" : "stubbed"}) ===`);
+  console.log("vault dir:", vaultDir);
+
+  try {
+    // The knowledge note under test: contains a public URL (bookmark case).
+    const notePath = await seedNote(
+      vaultDir,
+      "20260828-090000-example-domain.md",
+      "id: 20260828-090000-example-domain\ncreated: 2026-08-28T09:00:00.000Z\nkind: knowledge\ntags: [reference]",
+      `Example Domain as a safe test target\n\nBookmarking ${PUBLIC_URL} — I keep needing a URL that is safe to\nhit from tests without hammering somebody's server.\n`,
+    );
+    // Two unrelated notes, which double as the link candidates.
+    const groceriesPath = await seedNote(
+      vaultDir,
+      "20260828-100000-groceries.md",
+      "id: 20260828-100000-groceries\ncreated: 2026-08-28T10:00:00.000Z\nkind: note\ntags: [home]",
+      "Groceries\n\noat milk, rye bread\n",
+    );
+    const taxesPath = await seedNote(
+      vaultDir,
+      "20260828-110000-file-taxes.md",
+      "id: 20260828-110000-file-taxes\ncreated: 2026-08-28T11:00:00.000Z\nkind: task\ntags: [admin]\ndeadline: 2026-09-15\ndone: false",
+      "File taxes\n\nGather receipts first.\n",
+    );
+
+    const related: RelatedNote[] = [
+      { id: "20260828-100000-groceries", title: "Groceries" },
+      { id: "20260828-110000-file-taxes", title: "File taxes" },
+    ];
+
+    const rawBefore = await readFile(notePath);
+    const bodyBefore = bodyBytes(rawBefore);
+    const groceriesBefore = await readFile(groceriesPath);
+    const taxesBefore = await readFile(taxesPath);
+
+    // The stub deliberately misbehaves the way a model can: a tag containing a
+    // comma (which would silently split into two tags) and a wiki-link to a
+    // note that does not exist.
+    const deps: EnrichDeps = real
+      ? { runPrompt: (await import("../src/llm.ts")).runPrompt }
+      : stubDeps(
+          "```json\n" +
+            JSON.stringify({
+              tags: ["web, bookmarks", "  #Test Fixtures ", "reference"],
+              context:
+                `${PUBLIC_URL} is IANA's reserved domain for documentation and examples. ` +
+                "The page is a single paragraph explaining that the domain may be used in " +
+                "literature without prior coordination.\n\n" +
+                "Unrelated but nearby: [[20260828-100000-groceries]] and " +
+                "[[20260828-110000-file-taxes]]. Also [[no-such-note]] and " +
+                "[[another-fake-id|a fake with display text]].",
+            }) +
+            "\n```",
+        );
+
+    const result = await enrichNote({ vaultDir, path: notePath, related }, deps);
+    console.log("\nenrichNote result:", JSON.stringify(result, null, 2));
+
+    const rawAfter = await readFile(notePath);
+    console.log("\n--- note after enrichment ---");
+    console.log(rawAfter.toString("utf8"));
+    console.log("--- end of note ---\n");
+
+    assert(result.status === "enriched", "note was enriched");
+
+    // (1) original user text bytes remain verbatim
+    const bodyAfter = bodyBytes(rawAfter);
+    assert(
+      bodyAfter.length >= bodyBefore.length &&
+        Buffer.compare(bodyAfter.subarray(0, bodyBefore.length), bodyBefore) === 0,
+      "original body bytes are present verbatim as an exact byte prefix",
+    );
+
+    // (2) appended `## Context` section
+    const appended = bodyAfter.subarray(bodyBefore.length).toString("utf8");
+    assert(
+      (bodyAfter.toString("utf8").match(/^## Context$/gm) ?? []).length === 1,
+      "exactly one `## Context` heading",
+    );
+    assert(appended.includes("## Context"), "the `## Context` section is in the APPENDED bytes");
+    assert(appended.trim().length > 40, "appended section has real content");
+
+    // (3) enriched frontmatter is set
+    const { fm } = parseNoteFile(rawAfter.toString("utf8"));
+    const enriched = fm.data["enriched"];
+    assert(typeof enriched === "string" && enriched !== "", "`enriched` frontmatter is set");
+    assert(
+      typeof enriched === "string" && !Number.isNaN(Date.parse(enriched)),
+      `\`enriched\` parses as a date (${String(enriched)})`,
+    );
+    assert(fm.data["source"] === PUBLIC_URL, `\`source\` is the note's URL (${PUBLIC_URL})`);
+
+    // frontmatter additions are limited to tags / source / enriched
+    const before = parseNoteFile(rawBefore.toString("utf8")).fm.data;
+    const addedKeys = Object.keys(fm.data).filter((k) => !(k in before));
+    assert(
+      addedKeys.every((k) => ["tags", "source", "enriched"].includes(k)),
+      `only tags/source/enriched added (added: ${addedKeys.join(", ") || "none"})`,
+    );
+    const tagsAfter = Array.isArray(fm.data["tags"]) ? fm.data["tags"] : [];
+    assert(
+      tagsAfter[0] === "reference",
+      `existing tag kept, in place (tags: [${tagsAfter.join(", ")}])`,
+    );
+    assert(tagsAfter.every((t) => !t.includes(",")), "no tag contains a comma");
+
+    // (4) at most 3 wiki-links, all to notes that exist
+    const links = countWikiLinks(bodyAfter.toString("utf8"));
+    assert(links.length <= MAX_LINKS, `at most ${MAX_LINKS} wiki-links (found ${links.length})`);
+    const candidateIds = related.map((r) => r.id);
+    assert(
+      links.every((l) => candidateIds.includes(l)),
+      `every wiki-link targets an existing note (${JSON.stringify(links)})`,
+    );
+
+    // (5) the file still parses — TS parser and the Rust parser's rules
+    assert(fm.data["id"] === "20260828-090000-example-domain", "TS parser: id round-trips");
+    assert(fm.data["kind"] === "knowledge", "TS parser: kind round-trips");
+    const rust = parseLikeRust(rawAfter.toString("utf8"));
+    assert(rust.data["id"] === "20260828-090000-example-domain", "Rust parser: id round-trips");
+    assert(rust.data["kind"] === "knowledge", "Rust parser: kind round-trips");
+    assert(rust.data["created"] === "2026-08-28T09:00:00.000Z", "Rust parser: ISO created survives the first-colon split");
+    assert(rust.data["source"] === PUBLIC_URL, "Rust parser: URL `source` survives the first-colon split");
+    assert(rust.data["enriched"] === enriched, "Rust parser: `enriched` matches the TS parser");
+    assert(rust.tags.join(",") === tagsAfter.join(","), "Rust parser: tags list matches the TS parser");
+    assert(rust.body.includes("## Context"), "Rust parser: body carries the appended section");
+
+    // nothing else in the vault was touched
+    assert(
+      Buffer.compare(await readFile(groceriesPath), groceriesBefore) === 0 &&
+        Buffer.compare(await readFile(taxesPath), taxesBefore) === 0,
+      "the other two notes are byte-identical",
+    );
+
+    if (real) {
+      // Bookmark behaviour: the model actually fetched the page. example.com's
+      // body is about it being reserved for illustrative/documentation use.
+      assert(result.fetchedUrls.includes(PUBLIC_URL), "the note's URL was offered to WebFetch");
+      const lower = appended.toLowerCase();
+      assert(
+        ["example", "illustrat", "document", "domain", "iana", "reserved"].some((w) =>
+          lower.includes(w),
+        ),
+        "appended section summarises the fetched page",
+      );
+    } else {
+      // Stub-only: the deterministic guards, which a real reply cannot pin down.
+      assert(links.length === 2, "stub: both real candidates linked");
+      assert(
+        !bodyAfter.toString("utf8").includes("[[no-such-note]]") &&
+          !bodyAfter.toString("utf8").includes("[[another-fake-id"),
+        "stub: hallucinated link targets were de-linked, not left dangling",
+      );
+      assert(
+        appended.includes("no-such-note") && appended.includes("a fake with display text"),
+        "stub: de-linked targets survive as plain text (nothing silently dropped)",
+      );
+      assert(
+        tagsAfter.join(",") === "reference,web-bookmarks,test-fixtures",
+        `stub: tags merged + sanitised (got [${tagsAfter.join(", ")}])`,
+      );
+    }
+
+    // --- idempotence: a second pass must not touch the note ---
+    const beforeSecond = await readFile(notePath);
+    const second = await enrichNote(
+      { vaultDir, path: notePath, related },
+      stubDeps('{"tags":["should-not-appear"],"context":"should not be appended"}'),
+    );
+    assert(second.status === "skipped", `second pass skips (${second.reason ?? ""})`);
+    assert(
+      Buffer.compare(await readFile(notePath), beforeSecond) === 0,
+      "second pass left the file byte-identical",
+    );
+  } finally {
+    await rm(vaultDir, { recursive: true, force: true });
+  }
+}
+
+// --- scenario 2: the link cap actually clamps (stub only, no spend) ----------
+
+async function scenarioLinkCap(): Promise<void> {
+  const vaultDir = await mkdtemp(join(tmpdir(), "notebook-enrich-cap-"));
+  console.log("\n=== scenario: wiki-link cap ===");
+  try {
+    const notePath = await seedNote(
+      vaultDir,
+      "20260828-120000-linking.md",
+      "id: 20260828-120000-linking\ncreated: 2026-08-28T12:00:00.000Z\nkind: knowledge\ntags: []",
+      "Linking notes together\n\nHow many links is too many?\n",
+    );
+    const related: RelatedNote[] = [1, 2, 3, 4, 5].map((n) => ({
+      id: `candidate-${n}`,
+      title: `Candidate ${n}`,
+    }));
+    for (const r of related) {
+      await seedNote(
+        vaultDir,
+        `${r.id}.md`,
+        `id: ${r.id}\ncreated: 2026-08-28T12:0${r.id.slice(-1)}:00.000Z\nkind: note\ntags: []`,
+        `${r.title}\n`,
+      );
+    }
+
+    const rawBefore = await readFile(notePath);
+    const bodyBefore = bodyBytes(rawBefore);
+
+    // Six links: four valid candidates plus two hallucinated ids.
+    const result = await enrichNote(
+      { vaultDir, path: notePath, related },
+      stubDeps(
+        JSON.stringify({
+          tags: ["linking"],
+          context:
+            "See [[candidate-1]], [[candidate-2]], [[candidate-3]], [[candidate-4]], " +
+            "[[ghost-note]] and [[phantom-note]].",
+        }),
+      ),
+    );
+
+    const rawAfter = await readFile(notePath);
+    const bodyAfter = bodyBytes(rawAfter);
+    const links = countWikiLinks(bodyAfter.toString("utf8"));
+    console.log("links kept:", JSON.stringify(links));
+    console.log("appended:", bodyAfter.subarray(bodyBefore.length).toString("utf8").trim());
+
+    assert(result.status === "enriched", "cap scenario: note enriched");
+    assert(links.length === MAX_LINKS, `exactly ${MAX_LINKS} links survive a 6-link reply`);
+    assert(
+      links.join(",") === "candidate-1,candidate-2,candidate-3",
+      "the first 3 valid candidates are the ones kept",
+    );
+    assert(
+      !rawAfter.toString("utf8").includes("[[ghost-note]]") &&
+        !rawAfter.toString("utf8").includes("[[phantom-note]]"),
+      "hallucinated targets never become links",
+    );
+    assert(
+      Buffer.compare(bodyAfter.subarray(0, bodyBefore.length), bodyBefore) === 0,
+      "cap scenario: original body bytes verbatim",
+    );
+  } finally {
+    await rm(vaultDir, { recursive: true, force: true });
+  }
+}
+
+// --- scenario 3: failure safety (stub only, no spend) ------------------------
+
+async function scenarioFailureSafe(): Promise<void> {
+  const vaultDir = await mkdtemp(join(tmpdir(), "notebook-enrich-fail-"));
+  console.log("\n=== scenario: failure safety ===");
+  try {
+    const notePath = await seedNote(
+      vaultDir,
+      "20260828-130000-fragile.md",
+      "id: 20260828-130000-fragile\ncreated: 2026-08-28T13:00:00.000Z\nkind: knowledge\ntags: [rust]",
+      "Fragile note\n\nThis text must survive a failed enrichment untouched.\n",
+    );
+    const rawBefore = await readFile(notePath);
+
+    // (a) the model call itself fails — e.g. sidecar unreachable, not authed
+    const thrown = await enrichNote(
+      { vaultDir, path: notePath, related: [] },
+      { runPrompt: async () => { throw new Error("Not authenticated with Claude Code."); } },
+    ).then(
+      () => null,
+      (err: Error) => err,
+    );
+    assert(thrown !== null, "a failing model call propagates as an error");
+    assert(
+      Buffer.compare(await readFile(notePath), rawBefore) === 0,
+      "failed model call: note is byte-identical",
+    );
+
+    // (b) the model replies with something unusable
+    const garbage = await enrichNote(
+      { vaultDir, path: notePath, related: [] },
+      stubDeps("I'm afraid I can't do that."),
+    ).then(
+      () => null,
+      (err: Error) => err,
+    );
+    assert(garbage !== null, "an unparseable reply propagates as an error");
+    assert(
+      Buffer.compare(await readFile(notePath), rawBefore) === 0,
+      "unusable reply: note is byte-identical",
+    );
+
+    // The crucial part: no marker was written, so the next app start retries.
+    const { fm } = parseNoteFile((await readFile(notePath)).toString("utf8"));
+    assert(fm.data["enriched"] === undefined, "no `enriched` marker after failure -> will retry");
+
+    // And a note outside the vault is refused before any read/write.
+    const escaped = await enrichNote(
+      { vaultDir, path: "/etc/hosts" },
+      stubDeps('{"tags":[],"context":"nope"}'),
+    ).then(
+      () => null,
+      (err: Error) => err,
+    );
+    assert(
+      escaped !== null && /not a note inside the vault/.test(escaped.message),
+      "a path outside the vault is refused",
+    );
+  } finally {
+    await rm(vaultDir, { recursive: true, force: true });
+  }
+}
+
+// --- run ---------------------------------------------------------------------
+
+await scenarioMain();
+if (!real) {
+  // Stubbed guards; skipped on the real run, which exists only to prove the
+  // WebFetch/bookmark behaviour that a stub cannot.
+  await scenarioLinkCap();
+  await scenarioFailureSafe();
+}
+
+if (failures > 0) {
+  console.error(`\nenrich-demo: ${failures} assertion(s) FAILED`);
+  process.exit(1);
+}
+console.log(`\nenrich-demo: all assertions passed (${real ? "real LLM" : "stubbed"})`);
