@@ -24,4 +24,8 @@ serde_json = "1"
 tauri-plugin-global-shortcut = "2"
 # NSPanel support for the overlay window (macOS-only crate; this app targets macOS).
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2.1" }
+# SQLite index; `bundled` compiles sqlite in (includes FTS5).
+rusqlite = { version = "0.37", features = ["bundled"] }
+# Vault dir file watcher.
+notify = "8"
 
