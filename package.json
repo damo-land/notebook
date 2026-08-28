@@ -8,7 +8,9 @@
     "build": "tsc && vite build",
     "typecheck": "tsc --noEmit",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "sidecar:install": "npm --prefix sidecar install",
+    "sidecar:smoke": "npm --prefix sidecar run smoke"
   },
   "dependencies": {
     "react": "^19.1.0",
