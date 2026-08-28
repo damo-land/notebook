@@ -1,9 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { createNote, getVaultDir, type NoteKind } from "./lib/vault";
+import {
+  createNote,
+  getVaultDir,
+  readNote,
+  updateNote,
+  type Note,
+  type NoteKind,
+} from "./lib/vault";
 import { homeDir, tauriVaultFs } from "./lib/vault-fs";
 import { parseDateEntry } from "./lib/date-entry";
+import { onOpenNote } from "./lib/note-editor-bus";
 import { CommandPalette, type CommandItem } from "./components/command-palette";
+import { NoteEditor } from "./components/note-editor";
 import "./App.css";
 
 type Mode = "plain" | "task" | "knowledge";
@@ -34,6 +43,10 @@ function App() {
   const [fieldText, setFieldText] = useState("");
   const [deadline, setDeadline] = useState<{ raw: string; iso: string | null } | null>(null);
   const [category, setCategory] = useState<string | null>(null);
+  // Editor view for an existing note. Orthogonal to `mode`: while non-null it
+  // replaces the capture UI entirely, so capture's keydown chain (palette,
+  // field menu, mode Esc, Enter-saves) is unmounted and cannot fire.
+  const [editing, setEditing] = useState<Note | null>(null);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const vaultDirRef = useRef<string | null>(null);
@@ -101,6 +114,45 @@ function App() {
       }
     },
     [resetToPlain]
+  );
+
+  // Open-by-id: T8/T10 (or any code) call openNote(id) from
+  // src/lib/note-editor-bus.ts; this subscription reads the note and shows
+  // the editor. Capture state (mode, fields, body) is left as-is underneath.
+  useEffect(() => {
+    return onOpenNote((id) => {
+      void (async () => {
+        try {
+          const vaultDir = vaultDirRef.current ?? (await getVaultDir(tauriVaultFs, await homeDir()));
+          vaultDirRef.current = vaultDir;
+          setEditing(await readNote(tauriVaultFs, vaultDir, id));
+        } catch (err) {
+          console.error("open note failed:", err);
+        }
+      })();
+    });
+  }, []);
+
+  /** Persist the edited body via updateNote, then back to capture. The
+   *  overlay stays visible: editing is deliberate context, unlike quick
+   *  capture where save dismisses the window. */
+  const saveEdit = useCallback(
+    async (note: Note, newBody: string) => {
+      if (newBody.trim() === "") return; // don't wipe a note to empty
+      if (savingRef.current) return;
+      savingRef.current = true;
+      try {
+        const vaultDir = vaultDirRef.current ?? (await getVaultDir(tauriVaultFs, await homeDir()));
+        vaultDirRef.current = vaultDir;
+        await updateNote(tauriVaultFs, vaultDir, note.id, { replaceBody: newBody });
+        setEditing(null); // back to plain capture, overlay stays up
+      } catch (err) {
+        console.error("save note failed:", err);
+      } finally {
+        savingRef.current = false;
+      }
+    },
+    []
   );
 
   const enterMode = (next: Mode) => {
@@ -227,6 +279,19 @@ function App() {
   };
 
   const fieldParsed = editingField === "deadline" ? parseDateEntry(fieldText) : null;
+
+  if (editing) {
+    return (
+      <main className="overlay">
+        <NoteEditor
+          key={editing.path} // remount (fresh draft) when a different note opens
+          note={editing}
+          onSave={(newBody) => void saveEdit(editing, newBody)}
+          onClose={() => setEditing(null)} // Esc: discard draft, back to capture
+        />
+      </main>
+    );
+  }
 
   return (
     <main className="overlay">
