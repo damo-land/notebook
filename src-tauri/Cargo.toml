@@ -28,4 +28,7 @@ tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2.
 rusqlite = { version = "0.37", features = ["bundled"] }
 # Vault dir file watcher.
 notify = "8"
+# macOS notifications for due alerts (fired from Rust: the scheduler must work
+# while the overlay is hidden and the webview idle).
+tauri-plugin-notification = "2"
 
