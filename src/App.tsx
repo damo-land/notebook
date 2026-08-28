@@ -10,7 +10,7 @@ import {
   type NoteKind,
 } from "./lib/vault";
 import { homeDir, tauriVaultFs } from "./lib/vault-fs";
-import { parseDateEntry } from "./lib/date-entry";
+import { parseDateEntry, parseDateTimeEntry } from "./lib/date-entry";
 import { onOpenNote } from "./lib/note-editor-bus";
 import { CommandPalette, type CommandItem } from "./components/command-palette";
 import { NoteEditor } from "./components/note-editor";
@@ -18,7 +18,7 @@ import { TasksView } from "./components/tasks-view";
 import "./App.css";
 
 type Mode = "plain" | "task" | "knowledge";
-type FieldId = "deadline" | "category";
+type FieldId = "deadline" | "category" | "alert";
 
 // `/` palette in plain capture. search/chat are placeholders until their
 // tasks land: shown greyed, never selectable.
@@ -29,11 +29,25 @@ const COMMANDS: CommandItem[] = [
   { id: "chat", label: "chat", hint: "coming soon", disabled: true },
 ];
 
-// `/` field selector inside task mode.
+// `/` field selector. Alert (T9) is offered in plain capture too, so a bare
+// note can carry a reminder; knowledge mode has no fields in v1.
+const ALERT_FIELD: CommandItem = {
+  id: "alert",
+  label: "alert",
+  hint: "fri 9am, tomorrow 14:30, 18:00",
+};
 const TASK_FIELDS: CommandItem[] = [
   { id: "deadline", label: "deadline", hint: "fri, 2026-09-03, +3d" },
   { id: "category", label: "category", hint: "single tag" },
+  ALERT_FIELD,
 ];
+const PLAIN_FIELDS: CommandItem[] = [ALERT_FIELD];
+
+function fieldsForMode(mode: Mode): CommandItem[] {
+  if (mode === "task") return TASK_FIELDS;
+  if (mode === "plain") return PLAIN_FIELDS;
+  return [];
+}
 
 function App() {
   const [mode, setMode] = useState<Mode>("plain");
@@ -45,6 +59,8 @@ function App() {
   const [fieldText, setFieldText] = useState("");
   const [deadline, setDeadline] = useState<{ raw: string; iso: string | null } | null>(null);
   const [category, setCategory] = useState<string | null>(null);
+  // Alert datetime (T9). Available in plain capture as well as task mode.
+  const [alertAt, setAlertAt] = useState<{ raw: string; iso: string | null } | null>(null);
   // Editor view for an existing note. Orthogonal to `mode`: while non-null it
   // replaces the capture UI entirely, so capture's keydown chain (palette,
   // field menu, mode Esc, Enter-saves) is unmounted and cannot fire.
@@ -68,7 +84,8 @@ function App() {
   const paletteSelectable = paletteItems.filter((c) => !c.disabled);
   const paletteSelected =
     paletteSelectable[Math.min(paletteIndex, Math.max(paletteSelectable.length - 1, 0))] ?? null;
-  const fieldSelected = TASK_FIELDS[fieldMenuIndex] ?? null;
+  const fields = fieldsForMode(mode);
+  const fieldSelected = fields[fieldMenuIndex] ?? null;
 
   // Resolve the vault dir once at startup.
   useEffect(() => {
@@ -106,10 +123,15 @@ function App() {
     setFieldText("");
     setDeadline(null);
     setCategory(null);
+    setAlertAt(null);
   }, []);
 
   const save = useCallback(
-    async (text: string, kind: NoteKind, opts: { deadline?: string; tags?: string[] } = {}) => {
+    async (
+      text: string,
+      kind: NoteKind,
+      opts: { deadline?: string; tags?: string[]; alert?: string } = {}
+    ) => {
       // Guard: empty (or whitespace-only) input creates no file.
       if (text.trim() === "") return;
       if (savingRef.current) return; // no double-save on repeated Enter
@@ -123,6 +145,7 @@ function App() {
           kind,
           tags: opts.tags,
           deadline: opts.deadline,
+          alert: opts.alert,
         });
         setBody("");
         resetToPlain();
@@ -213,8 +236,10 @@ function App() {
     if (fieldMenuOpen) {
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
-        const n = TASK_FIELDS.length;
-        setFieldMenuIndex((i) => (event.key === "ArrowDown" ? (i + 1) % n : (i - 1 + n) % n));
+        const n = fields.length;
+        if (n > 0) {
+          setFieldMenuIndex((i) => (event.key === "ArrowDown" ? (i + 1) % n : (i - 1 + n) % n));
+        }
         return;
       }
       if (event.key === "Enter") {
@@ -245,12 +270,18 @@ function App() {
       return;
     }
 
-    // 4. "/" at a line start inside task mode opens the field selector.
-    if (event.key === "/" && mode === "task") {
+    // 4. "/" at a line start opens the field selector, in every mode that has
+    // fields (task: deadline/category/alert; plain: alert). ONE exception,
+    // which keeps T2's command palette reachable: in plain mode a "/" typed
+    // into a completely empty input is the COMMAND palette (mode switch), so
+    // the palette owns that single keystroke and every other line-start "/"
+    // opens the field selector.
+    if (event.key === "/" && fields.length > 0) {
       const el = event.currentTarget;
       const pos = el.selectionStart;
       const atLineStart = el.selectionEnd === pos && (pos === 0 || body[pos - 1] === "\n");
-      if (atLineStart) {
+      const opensCommandPalette = mode === "plain" && body === "";
+      if (atLineStart && !opensCommandPalette) {
         event.preventDefault();
         setFieldMenuOpen(true);
         setFieldMenuIndex(0);
@@ -261,12 +292,15 @@ function App() {
     // 5. Enter saves; Shift+Enter falls through to insert a newline.
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
+      // Unparsed field text is never saved (the chip shows it as unparsed).
+      const alert = alertAt?.iso ?? undefined;
       if (mode === "plain") {
-        void save(body, "note");
+        void save(body, "note", { alert });
       } else {
         void save(body, mode, {
-          deadline: deadline?.iso ?? undefined, // unparsed deadline is not saved
+          deadline: deadline?.iso ?? undefined,
           tags: category ? [category] : undefined,
+          alert,
         });
       }
     }
@@ -284,6 +318,8 @@ function App() {
       const text = fieldText.trim();
       if (editingField === "deadline") {
         setDeadline(text === "" ? null : { raw: text, iso: parseDateEntry(text) });
+      } else if (editingField === "alert") {
+        setAlertAt(text === "" ? null : { raw: text, iso: parseDateTimeEntry(text) });
       } else if (editingField === "category") {
         setCategory(text === "" ? null : text);
       }
@@ -298,7 +334,12 @@ function App() {
     }
   };
 
-  const fieldParsed = editingField === "deadline" ? parseDateEntry(fieldText) : null;
+  const fieldParsed =
+    editingField === "deadline"
+      ? parseDateEntry(fieldText)
+      : editingField === "alert"
+        ? parseDateTimeEntry(fieldText)
+        : null;
 
   if (editing) {
     return (
@@ -324,18 +365,24 @@ function App() {
   return (
     <main className="overlay">
       <div className="capture">
-        {mode !== "plain" && (
+        {(mode !== "plain" || alertAt) && (
           <div className="chips">
-            <span className={`chip chip-kind chip-${mode}`}>{mode}</span>
+            {mode !== "plain" && <span className={`chip chip-kind chip-${mode}`}>{mode}</span>}
             {deadline &&
               (deadline.iso ? (
                 <span className="chip">deadline {deadline.iso}</span>
               ) : (
                 <span className="chip chip-invalid">deadline "{deadline.raw}" unparsed</span>
               ))}
+            {alertAt &&
+              (alertAt.iso ? (
+                <span className="chip">alert {alertAt.iso}</span>
+              ) : (
+                <span className="chip chip-invalid">alert "{alertAt.raw}" unparsed</span>
+              ))}
             {category && <span className="chip">#{category}</span>}
-            {mode === "task" && !editingField && !fieldMenuOpen && (
-              <span className="chip-hint">/ for deadline · category</span>
+            {fields.length > 0 && !editingField && !fieldMenuOpen && (
+              <span className="chip-hint">/ for {fields.map((f) => f.label).join(" · ")}</span>
             )}
           </div>
         )}
@@ -361,7 +408,7 @@ function App() {
           <CommandPalette items={paletteItems} selectedId={paletteSelected?.id ?? null} />
         )}
         {fieldMenuOpen && (
-          <CommandPalette items={TASK_FIELDS} selectedId={fieldSelected?.id ?? null} />
+          <CommandPalette items={fields} selectedId={fieldSelected?.id ?? null} />
         )}
         {editingField && (
           <div className="field-editor">
@@ -371,11 +418,17 @@ function App() {
               value={fieldText}
               onChange={(e) => setFieldText(e.target.value)}
               onKeyDown={onFieldKeyDown}
-              placeholder={editingField === "deadline" ? "fri · 2026-09-03 · +3d" : "tag name"}
+              placeholder={
+                editingField === "deadline"
+                  ? "fri · 2026-09-03 · +3d"
+                  : editingField === "alert"
+                    ? "fri 9am · tomorrow 14:30 · 18:00"
+                    : "tag name"
+              }
               autoFocus
               spellCheck={false}
             />
-            {editingField === "deadline" && fieldText.trim() !== "" && (
+            {editingField !== "category" && fieldText.trim() !== "" && (
               <span className={fieldParsed ? "field-parse" : "field-parse field-parse-bad"}>
                 {fieldParsed ? `${fieldText.trim()} → ${fieldParsed}` : "unparsed"}
               </span>
