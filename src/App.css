@@ -25,10 +25,13 @@ body {
 .overlay-input {
   width: 100%;
   padding: 12px 14px;
-  font-size: 18px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 15px;
+  line-height: 1.5;
   color: inherit;
   background: #2a2a2a;
   border: 1px solid #3a3a3a;
   border-radius: 8px;
   outline: none;
+  resize: none;
 }

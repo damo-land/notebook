@@ -107,6 +107,19 @@ async function main() {
     console.log(`- ${n.id} [${n.frontmatter.kind}] "${n.firstLine}" tags=[${n.frontmatter.tags}]`);
   }
 
+  // path clamp: full paths from listNotes resolve fine…
+  const viaPath = await readNote(fs, vaultDir, listing[0].path);
+  assert.strictEqual(viaPath.id, listing[0].id);
+  // …but anything escaping the vault dir is rejected before any fs access
+  for (const bad of ["/tmp/x.md", "../escape.md", `${vaultDir}/../escape.md`, "/etc/passwd"]) {
+    await assert.rejects(readNote(fs, vaultDir, bad), /escapes vault dir/);
+    await assert.rejects(
+      updateNote(fs, vaultDir, bad, { appendBody: "x" }),
+      /escapes vault dir/
+    );
+  }
+  console.log("notePath clamp: vault paths allowed, escaping paths rejected");
+
   console.log("all checks passed");
 }
 
