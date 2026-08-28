@@ -77,9 +77,36 @@ function timestampPrefix(d: Date): string {
   );
 }
 
+/** Collapses `.`/`..`/empty segments; `..` at the root is preserved. */
+function normalizeSegments(path: string): string {
+  const segs: string[] = [];
+  for (const seg of path.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === ".." && segs.length > 0 && segs[segs.length - 1] !== "..") {
+      segs.pop();
+      continue;
+    }
+    segs.push(seg);
+  }
+  return (path.startsWith("/") ? "/" : "") + segs.join("/");
+}
+
+/**
+ * Resolves `idOrPath` (a bare note id, or a path as returned by `listNotes`)
+ * to a normalized path INSIDE `vaultDir`. Anything that would escape the
+ * vault — an absolute path outside it, or `..` traversal — throws.
+ */
 function notePath(vaultDir: string, idOrPath: string): string {
-  if (idOrPath.endsWith(".md") || idOrPath.includes("/")) return idOrPath;
-  return `${vaultDir}/${idOrPath}.md`;
+  const root = normalizeSegments(vaultDir);
+  const raw =
+    idOrPath.endsWith(".md") || idOrPath.includes("/")
+      ? idOrPath
+      : `${idOrPath}.md`;
+  const resolved = normalizeSegments(raw.startsWith("/") ? raw : `${root}/${raw}`);
+  if (resolved !== root && !resolved.startsWith(`${root}/`)) {
+    throw new Error(`note path escapes vault dir (${vaultDir}): ${idOrPath}`);
+  }
+  return resolved;
 }
 
 function toFrontmatter(fm: ParsedFrontmatter): NoteFrontmatter {
