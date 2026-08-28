@@ -56,7 +56,7 @@ pub fn open_db(db_path: &Path) -> Result<Connection> {
 // pairs between `---` lines; `[a, b]` inline lists; tolerant of junk lines)
 // ---------------------------------------------------------------------------
 
-fn parse_note_file(text: &str) -> (HashMap<String, String>, Vec<String>, String) {
+pub(crate) fn parse_note_file(text: &str) -> (HashMap<String, String>, Vec<String>, String) {
     let mut data = HashMap::new();
     let mut tags = Vec::new();
     let Some(rest) = text.strip_prefix("---\n") else {
@@ -304,9 +304,15 @@ pub fn resolve_vault_dir(home: &Path) -> PathBuf {
 
 /// Watches `vault_dir` and triggers a full reindex ~500ms after the last file
 /// event. The returned watcher must be kept alive for the app's lifetime.
+///
+/// `on_reindex` runs after each successful reindex, **outside** the connection
+/// lock so it can query the index itself. T12 uses it to queue enrichment jobs
+/// for freshly saved knowledge notes: the watcher already sees every vault
+/// write, whatever wrote it, and it fires only after the file is on disk.
 pub fn spawn_watcher(
     vault_dir: PathBuf,
     conn: Arc<Mutex<Connection>>,
+    on_reindex: impl Fn() + Send + 'static,
 ) -> notify::Result<notify::RecommendedWatcher> {
     use notify::Watcher;
     let (tx, rx) = mpsc::channel::<()>();
@@ -320,10 +326,18 @@ pub fn spawn_watcher(
         while rx.recv().is_ok() {
             // Debounce: swallow further events until 500ms of quiet.
             while rx.recv_timeout(Duration::from_millis(500)).is_ok() {}
-            if let Ok(conn) = conn.lock() {
-                if let Err(e) = reindex(&conn, &vault_dir) {
-                    eprintln!("index: reindex after file change failed: {e}");
-                }
+            let reindexed = match conn.lock() {
+                Ok(conn) => match reindex(&conn, &vault_dir) {
+                    Ok(_) => true,
+                    Err(e) => {
+                        eprintln!("index: reindex after file change failed: {e}");
+                        false
+                    }
+                },
+                Err(_) => false,
+            };
+            if reindexed {
+                on_reindex();
             }
         }
     });

@@ -1,8 +1,10 @@
+pub mod enrich;
 pub mod index;
 
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
@@ -138,26 +140,76 @@ fn home_dir() -> Result<String, String> {
 //
 // Spawned on app setup, killed on app exit. Line-delimited JSON over stdio:
 // we write {id, method, params?}\n to its stdin and read {id, ok, ...}\n lines
-// from its stdout. v1 only proves the round trip via `sidecar_ping`; later
-// tasks reuse the same handles for real methods.
+// from its stdout.
+//
+// Responses are routed back to callers **by id**: a `sidecar_ping` from the UI
+// and a minutes-long `enrich` job run concurrently, and whichever reply lands
+// first must not be handed to the wrong waiter.
 
 struct SidecarProc {
     child: Child,
     stdin: ChildStdin,
-    /// Lines from the sidecar's stdout, forwarded by a reader thread.
-    rx: mpsc::Receiver<String>,
     next_id: u64,
 }
 
 #[derive(Default)]
-struct SidecarState(Mutex<Option<SidecarProc>>);
+struct Sidecar {
+    proc: Mutex<Option<SidecarProc>>,
+    /// Request id -> where its response line goes. Filled by `call`, drained
+    /// by the stdout reader thread.
+    pending: Mutex<HashMap<u64, mpsc::Sender<String>>>,
+}
+
+impl Sidecar {
+    /// Writes one request line and returns the receiver for its response.
+    /// The process lock is released before returning, so the caller can wait
+    /// as long as it likes without blocking other callers.
+    fn call(
+        &self,
+        method: &str,
+        params: Option<serde_json::Value>,
+    ) -> Result<mpsc::Receiver<String>, String> {
+        let mut guard = self.proc.lock().map_err(|_| "sidecar state poisoned")?;
+        let proc = guard.as_mut().ok_or("sidecar not running")?;
+        proc.next_id += 1;
+        let id = proc.next_id;
+
+        let mut req = serde_json::json!({ "id": id, "method": method });
+        if let Some(params) = params {
+            req["params"] = params;
+        }
+
+        // Register before writing: a fast reply must never arrive unrouted.
+        let (tx, rx) = mpsc::channel::<String>();
+        self.pending
+            .lock()
+            .map_err(|_| "sidecar pending map poisoned")?
+            .insert(id, tx);
+
+        let line = format!("{req}\n");
+        if let Err(e) = proc
+            .stdin
+            .write_all(line.as_bytes())
+            .and_then(|_| proc.stdin.flush())
+        {
+            if let Ok(mut pending) = self.pending.lock() {
+                pending.remove(&id);
+            }
+            return Err(format!("write to sidecar: {e}"));
+        }
+        Ok(rx)
+    }
+}
+
+#[derive(Default)]
+struct SidecarState(Arc<Sidecar>);
 
 /// Dev wiring: the sidecar lives next to src-tauri in the repo.
 fn sidecar_dir() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../sidecar")
 }
 
-fn spawn_sidecar() -> Result<SidecarProc, String> {
+fn spawn_sidecar() -> Result<(Child, ChildStdin, ChildStdout), String> {
     let mut cmd = Command::new("node");
     cmd.args(["--import", "tsx", "src/main.ts"])
         .current_dir(sidecar_dir())
@@ -171,32 +223,30 @@ fn spawn_sidecar() -> Result<SidecarProc, String> {
     let mut child = cmd.spawn().map_err(|e| format!("spawn sidecar: {e}"))?;
     let stdin = child.stdin.take().ok_or("sidecar stdin unavailable")?;
     let stdout = child.stdout.take().ok_or("sidecar stdout unavailable")?;
+    Ok((child, stdin, stdout))
+}
 
-    let (tx, rx) = mpsc::channel::<String>();
+/// Reads response lines and hands each to the caller that asked for that id.
+fn spawn_sidecar_reader(sidecar: Arc<Sidecar>, stdout: ChildStdout) {
     std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines() {
-            match line {
-                Ok(line) => {
-                    if tx.send(line).is_err() {
-                        break;
-                    }
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            let waiter = serde_json::from_str::<serde_json::Value>(&line)
+                .ok()
+                .and_then(|v| v.get("id").and_then(|i| i.as_u64()))
+                .and_then(|id| sidecar.pending.lock().ok()?.remove(&id));
+            match waiter {
+                Some(tx) => {
+                    let _ = tx.send(line);
                 }
-                Err(_) => break,
+                None => eprintln!("[notebook] unmatched sidecar response: {line}"),
             }
         }
     });
-
-    Ok(SidecarProc {
-        child,
-        stdin,
-        rx,
-        next_id: 0,
-    })
 }
 
 fn kill_sidecar(app: &AppHandle) {
     let state = app.state::<SidecarState>();
-    let mut guard = match state.0.lock() {
+    let mut guard = match state.0.proc.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     };
@@ -206,21 +256,111 @@ fn kill_sidecar(app: &AppHandle) {
     }
 }
 
-/// Round-trip proof: send a `ping` line, wait for the response line (10s).
+/// Round-trip proof: send a `ping` line, wait for its response line (10s).
 #[tauri::command]
 fn sidecar_ping(state: tauri::State<SidecarState>) -> Result<String, String> {
-    let mut guard = state.0.lock().map_err(|_| "sidecar state poisoned")?;
-    let proc = guard.as_mut().ok_or("sidecar not running")?;
-
-    proc.next_id += 1;
-    let id = proc.next_id;
-    writeln!(proc.stdin, r#"{{"id":{id},"method":"ping"}}"#)
-        .and_then(|_| proc.stdin.flush())
-        .map_err(|e| format!("write to sidecar: {e}"))?;
-
-    proc.rx
-        .recv_timeout(Duration::from_secs(10))
+    let rx = state.0.call("ping", None)?;
+    rx.recv_timeout(Duration::from_secs(10))
         .map_err(|_| "sidecar ping timed out".to_string())
+}
+
+// --- Knowledge enrichment (T12) ---------------------------------------------
+//
+// Trigger is the vault file watcher, not a hook in the capture UI: the file is
+// always on disk before a job starts (capture latency is untouched), and it
+// works no matter what wrote the note — capture overlay, note editor, MCP, or
+// the user's own text editor.
+
+/// A job may fetch a URL and take a model turn or two.
+const ENRICH_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// The enrichment queue.
+///
+/// `dispatched` holds every note id queued during this app session and ids are
+/// **never removed**. A job that fails writes nothing, so it leaves no
+/// `enriched` marker and the startup reindex re-selects it next launch — but
+/// it is not retried in a loop for the rest of this session, which would burn
+/// the user's subscription on a note that keeps failing.
+struct EnrichQueue {
+    tx: mpsc::Sender<enrich::EnrichJob>,
+    dispatched: Mutex<HashSet<String>>,
+}
+
+/// One job at a time: enrichment is background work and must never contend
+/// with the user's own foreground prompts.
+fn spawn_enrich_worker(
+    sidecar: Arc<Sidecar>,
+    vault_dir: PathBuf,
+) -> mpsc::Sender<enrich::EnrichJob> {
+    let (tx, rx) = mpsc::channel::<enrich::EnrichJob>();
+    std::thread::spawn(move || {
+        for job in rx {
+            let params = serde_json::json!({
+                "vaultDir": vault_dir.to_string_lossy(),
+                "path": job.path,
+                "related": job.related,
+            });
+            let reply = sidecar.call("enrich", Some(params)).and_then(|rx| {
+                rx.recv_timeout(ENRICH_TIMEOUT)
+                    .map_err(|_| "no response within the enrichment timeout".to_string())
+            });
+            match reply {
+                Ok(line) => {
+                    let ok = serde_json::from_str::<serde_json::Value>(&line)
+                        .ok()
+                        .and_then(|v| v.get("ok").and_then(|b| b.as_bool()))
+                        .unwrap_or(false);
+                    if ok {
+                        eprintln!("[enrich] {}: {line}", job.id);
+                    } else {
+                        eprintln!("[enrich] {}: job failed, note left untouched: {line}", job.id);
+                    }
+                }
+                // Sidecar unreachable / dead / timed out: the note on disk is
+                // untouched and unmarked, so the next app start retries it.
+                Err(e) => eprintln!(
+                    "[enrich] {}: job not run, note left untouched: {e}",
+                    job.id
+                ),
+            }
+        }
+    });
+    tx
+}
+
+/// Queues one job per knowledge note that still lacks an `enriched` marker.
+fn dispatch_enrichment(
+    conn: &Arc<Mutex<rusqlite::Connection>>,
+    vault_dir: &Path,
+    queue: &EnrichQueue,
+) {
+    let jobs = {
+        let Ok(conn) = conn.lock() else {
+            return;
+        };
+        match enrich::pending_jobs(&conn, vault_dir) {
+            Ok(jobs) => jobs,
+            Err(e) => {
+                eprintln!("[enrich] selecting pending notes failed: {e}");
+                return;
+            }
+        }
+    };
+    let Ok(mut dispatched) = queue.dispatched.lock() else {
+        return;
+    };
+    for job in jobs {
+        // A debounce burst can reindex several times before a job finishes;
+        // this keeps the same note from being queued twice.
+        if !dispatched.insert(job.id.clone()) {
+            continue;
+        }
+        eprintln!("[enrich] queued {}", job.id);
+        if queue.tx.send(job).is_err() {
+            eprintln!("[enrich] worker is gone; enrichment disabled");
+            return;
+        }
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -260,6 +400,22 @@ pub fn run() {
             sidecar_ping
         ])
         .setup(|app| {
+            // Start the agent sidecar first: the enrichment retry pass below
+            // dispatches to it immediately. The app still works without it —
+            // jobs just log as "not run" and retry on a later start.
+            let sidecar = app.state::<SidecarState>().0.clone();
+            match spawn_sidecar() {
+                Ok((child, stdin, stdout)) => {
+                    spawn_sidecar_reader(sidecar.clone(), stdout);
+                    *sidecar.proc.lock().unwrap() = Some(SidecarProc {
+                        child,
+                        stdin,
+                        next_id: 0,
+                    });
+                }
+                Err(e) => eprintln!("[notebook] sidecar failed to start: {e}"),
+            }
+
             // SQLite index: db in app data dir (outside the vault), initial
             // full scan on start, watcher-driven rescans on file change.
             let db_path = app.path().app_data_dir()?.join("index.db");
@@ -270,7 +426,25 @@ pub fn run() {
                 eprintln!("index: initial reindex failed: {e}");
             }
             let conn = Arc::new(Mutex::new(conn));
-            let watcher = match index::spawn_watcher(vault_dir.clone(), conn.clone()) {
+
+            let queue = Arc::new(EnrichQueue {
+                tx: spawn_enrich_worker(sidecar, vault_dir.clone()),
+                dispatched: Mutex::new(HashSet::new()),
+            });
+            // Retry pass: any knowledge note still missing the `enriched`
+            // marker — a job that failed in an earlier session, or a note
+            // written while the app was closed.
+            dispatch_enrichment(&conn, &vault_dir, &queue);
+
+            let watcher = {
+                let conn = conn.clone();
+                let vault_dir = vault_dir.clone();
+                let queue = queue.clone();
+                index::spawn_watcher(vault_dir.clone(), conn.clone(), move || {
+                    dispatch_enrichment(&conn, &vault_dir, &queue)
+                })
+            };
+            let watcher = match watcher {
                 Ok(w) => Some(w),
                 Err(e) => {
                     eprintln!("index: vault watcher failed to start: {e}");
@@ -303,14 +477,6 @@ pub fn run() {
                 .get_webview_window(OVERLAY_WINDOW_LABEL)
                 .expect("overlay window must exist");
             window.to_panel::<OverlayPanel>()?;
-
-            // Start the agent sidecar; the app still works without it.
-            match spawn_sidecar() {
-                Ok(proc) => {
-                    *app.state::<SidecarState>().0.lock().unwrap() = Some(proc);
-                }
-                Err(e) => eprintln!("[notebook] sidecar failed to start: {e}"),
-            }
 
             Ok(())
         })
