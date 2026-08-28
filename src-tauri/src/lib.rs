@@ -12,11 +12,15 @@ use tauri::{
     AppHandle, Manager, RunEvent, State,
 };
 use tauri_nspanel::{tauri_panel, ManagerExt, WebviewWindowExt};
-use tauri_plugin_global_shortcut::ShortcutState;
+use tauri_plugin_global_shortcut::{Shortcut, ShortcutState};
 
 /// Global shortcut that toggles overlay visibility.
 /// T8 registers additional shortcuts alongside this one.
 pub const TOGGLE_OVERLAY_SHORTCUT: &str = "alt+space";
+
+/// Global shortcut that opens the overlay directly in the tasks view (T8).
+/// Shows the panel and emits `open-tasks-view` to the frontend.
+pub const TASKS_VIEW_SHORTCUT: &str = "alt+shift+space";
 
 const OVERLAY_WINDOW_LABEL: &str = "main";
 
@@ -37,6 +41,18 @@ fn toggle_overlay(app: &AppHandle) {
         } else {
             panel.show_and_make_key();
         }
+    }
+}
+
+/// Tasks-view shortcut: always show (never toggle-hide) and tell the
+/// frontend to switch to the tasks view.
+fn open_tasks_view(app: &AppHandle) {
+    if let Ok(panel) = app.get_webview_panel(OVERLAY_WINDOW_LABEL) {
+        panel.show_and_make_key();
+    }
+    use tauri::Emitter;
+    if let Err(e) = app.emit("open-tasks-view", ()) {
+        eprintln!("emit open-tasks-view: {e}");
     }
 }
 
@@ -213,11 +229,18 @@ pub fn run() {
         .plugin(tauri_nspanel::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_shortcuts([TOGGLE_OVERLAY_SHORTCUT])
-                .expect("TOGGLE_OVERLAY_SHORTCUT must parse as a valid shortcut")
-                .with_handler(|app, _shortcut, event| {
+                .with_shortcuts([TOGGLE_OVERLAY_SHORTCUT, TASKS_VIEW_SHORTCUT])
+                .expect("global shortcuts must parse as valid shortcuts")
+                .with_handler(|app, shortcut, event| {
                     if event.state == ShortcutState::Pressed {
-                        toggle_overlay(app);
+                        let is_tasks = TASKS_VIEW_SHORTCUT
+                            .parse::<Shortcut>()
+                            .is_ok_and(|s| s == *shortcut);
+                        if is_tasks {
+                            open_tasks_view(app);
+                        } else {
+                            toggle_overlay(app);
+                        }
                     }
                 })
                 .build(),
