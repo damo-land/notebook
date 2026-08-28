@@ -14,6 +14,22 @@ export class NotAuthenticatedError extends Error {
 export interface RunPromptOptions {
   /** Model override; defaults to NOTEBOOK_MODEL env var, else the SDK default. */
   model?: string;
+  /**
+   * Built-in tools to make available, e.g. `["WebFetch"]`. Default `[]` — a
+   * single-shot text call with no tools at all.
+   */
+  tools?: string[];
+  /**
+   * Tools auto-approved without a permission prompt. A tool listed in `tools`
+   * but not here falls through to `permissionMode`, which in this
+   * non-interactive process means the call stalls or is denied — so anything
+   * in `tools` normally belongs here too. (Verified against
+   * `Options.tools` / `Options.allowedTools` in the installed SDK's sdk.d.ts
+   * and the Agent SDK TypeScript reference.)
+   */
+  allowedTools?: string[];
+  /** Turn budget. Must be > 1 for a tool round trip. Default 1. */
+  maxTurns?: number;
 }
 
 let warnedAboutApiKey = false;
@@ -40,7 +56,7 @@ function stripApiKey(): void {
 const AUTH_ERROR_PATTERN =
   /auth|login|logged in|credential|api key|x-api-key|setup-token|oauth|token expired|401/i;
 
-/** Single-shot prompt -> plain text response. No tools, one turn. */
+/** Prompt -> plain text response. No tools and one turn unless `opts` says otherwise. */
 export async function runPrompt(
   text: string,
   opts: RunPromptOptions = {},
@@ -54,8 +70,9 @@ export async function runPrompt(
       prompt: text,
       options: {
         model,
-        tools: [],
-        maxTurns: 1,
+        tools: opts.tools ?? [],
+        allowedTools: opts.allowedTools,
+        maxTurns: opts.maxTurns ?? 1,
         persistSession: false,
       },
     })) {
