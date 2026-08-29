@@ -225,6 +225,12 @@ bad chat request leaves `ping` routing intact. `--real` is the load-bearing
 version of the "nothing was written to the vault" check, and the only path
 that shows the answer actually citing a note id.
 
+The demo removes its temp vault but not the SDK session that `persistSession`
+wrote for it, so a `--real` run leaves one directory behind under
+`~/.claude/projects/-private-var-folders-…-notebook-chat-demo-XXXXXX/`. That
+leftover is itself the evidence that sessions persist outside the vault;
+delete it by hand when you are done with it.
+
 ## Auth
 
 Auth relies on the Claude Code OAuth credential chain (your Claude
