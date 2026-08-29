@@ -1,8 +1,17 @@
 // Sidecar entry point: long-running process speaking line-delimited JSON over
 // stdio. Request: {id, method, params?} -> Response: {id, ok, result|error}.
 // v1 methods: ping (no LLM), prompt ({text} -> LLM response text),
-// enrich ({vaultDir, path, related?} -> append-only pass over a knowledge note).
+// enrich ({vaultDir, path, related?} -> append-only pass over a knowledge note),
+// chat ({vaultDir, text, session?, turn?} -> {text, session}).
+//
+// `chat` also writes UNSOLICITED lines while it works:
+//   {type: "chunk", id, turn, text}
+// one per streamed text delta. They are not responses — they carry no `ok`,
+// they do not close the request, and the normal {id, ok, result} line still
+// follows. A reader must therefore check `type` BEFORE looking `id` up in its
+// pending-request map, or the first chunk closes the request early.
 import { createInterface } from "node:readline";
+import { chatDeps, chatTurn } from "./chat.ts";
 import { enrichNote, type RelatedNote } from "./enrich.ts";
 import { runPrompt } from "./llm.ts";
 
@@ -30,6 +39,11 @@ function respond(
   body: { ok: true; result: unknown } | { ok: false; error: string },
 ): void {
   process.stdout.write(JSON.stringify({ id, ...body }) + "\n");
+}
+
+/** One streamed text delta. See the protocol note at the top of this file. */
+function emitChunk(id: number | string, turn: string | null, text: string): void {
+  process.stdout.write(JSON.stringify({ type: "chunk", id, turn, text }) + "\n");
 }
 
 async function handle(req: Request): Promise<void> {
@@ -62,6 +76,31 @@ async function handle(req: Request): Promise<void> {
         const result = await enrichNote(
           { vaultDir, path, related: toRelated(req.params?.["related"]) },
           { runPrompt },
+        );
+        respond(req.id, { ok: true, result });
+        break;
+      }
+      case "chat": {
+        const vaultDir = req.params?.["vaultDir"];
+        const text = req.params?.["text"];
+        if (typeof vaultDir !== "string" || vaultDir === "" || typeof text !== "string") {
+          respond(req.id, {
+            ok: false,
+            error: "chat requires params.vaultDir and params.text (non-empty strings)",
+          });
+          break;
+        }
+        const session = req.params?.["session"];
+        const turn = req.params?.["turn"];
+        const turnId = typeof turn === "string" ? turn : null;
+        const result = await chatTurn(
+          {
+            vaultDir,
+            text,
+            ...(typeof session === "string" && session !== "" ? { session } : {}),
+          },
+          chatDeps,
+          { onText: (delta) => emitChunk(req.id, turnId, delta) },
         );
         respond(req.id, { ok: true, result });
         break;

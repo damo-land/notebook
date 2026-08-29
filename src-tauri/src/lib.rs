@@ -266,12 +266,39 @@ fn spawn_sidecar() -> Result<(Child, ChildStdin, ChildStdout), String> {
     Ok((child, stdin, stdout))
 }
 
-/// Reads response lines and hands each to the caller that asked for that id.
-fn spawn_sidecar_reader(sidecar: Arc<Sidecar>, stdout: ChildStdout) {
+/// Reads sidecar output lines and routes each one.
+///
+/// Two kinds of line arrive here:
+///
+///   * `{"type":"chunk", id, turn, text}` — an unsolicited streaming delta from
+///     a `chat` call. Forwarded to the frontend as a `chat-chunk` Tauri event
+///     and NOT looked up in the pending map. The order matters: a chunk line
+///     carries the request id too, so checking `type` after the map lookup
+///     would hand the waiter its first delta and close the request early.
+///   * `{id, ok, ...}` — the one real response, which closes the request.
+///
+/// Nothing in here may kill the thread: a malformed line just fails the
+/// `serde_json` parse, falls through the chunk check, matches no waiter and is
+/// logged — leaving ping and enrich routing untouched.
+fn spawn_sidecar_reader(app: AppHandle, sidecar: Arc<Sidecar>, stdout: ChildStdout) {
+    use tauri::Emitter;
     std::thread::spawn(move || {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            let waiter = serde_json::from_str::<serde_json::Value>(&line)
-                .ok()
+            let parsed = serde_json::from_str::<serde_json::Value>(&line).ok();
+            let is_chunk = parsed
+                .as_ref()
+                .and_then(|v| v.get("type"))
+                .and_then(|t| t.as_str())
+                == Some("chunk");
+            if is_chunk {
+                if let Some(value) = parsed {
+                    if let Err(e) = app.emit("chat-chunk", value) {
+                        eprintln!("[notebook] emit chat-chunk failed: {e}");
+                    }
+                }
+                continue;
+            }
+            let waiter = parsed
                 .and_then(|v| v.get("id").and_then(|i| i.as_u64()))
                 .and_then(|id| sidecar.pending.lock().ok()?.remove(&id));
             match waiter {
@@ -302,6 +329,74 @@ fn sidecar_ping(state: tauri::State<SidecarState>) -> Result<String, String> {
     let rx = state.0.call("ping", None)?;
     rx.recv_timeout(Duration::from_secs(10))
         .map_err(|_| "sidecar ping timed out".to_string())
+}
+
+// --- Chat (T14) --------------------------------------------------------------
+//
+// One turn of the overlay's chat view. The answer streams back out of band as
+// `chat-chunk` events (see spawn_sidecar_reader); this command's return value
+// is the finished answer plus the SDK session id to continue from.
+//
+// The vault dir comes from IndexState, not from the frontend: there is exactly
+// one resolved vault path in the process and chat must not be able to point
+// the agent at a different directory.
+
+/// A chat turn greps and reads notes before answering, so it is slower than a
+/// one-shot prompt but much faster than an enrichment job.
+const CHAT_TIMEOUT: Duration = Duration::from_secs(180);
+
+#[derive(serde::Serialize)]
+struct ChatReply {
+    text: String,
+    /// SDK session id; the frontend sends it back on the next turn.
+    session: Option<String>,
+}
+
+#[tauri::command]
+async fn chat_send(
+    sidecar: State<'_, SidecarState>,
+    index: State<'_, IndexState>,
+    text: String,
+    session: Option<String>,
+    turn: String,
+) -> Result<ChatReply, String> {
+    let rx = sidecar.0.call(
+        "chat",
+        Some(serde_json::json!({
+            "vaultDir": index.vault_dir.to_string_lossy(),
+            "text": text,
+            "session": session,
+            "turn": turn,
+        })),
+    )?;
+    // Off the async runtime's threads: the wait is minutes long and blocking.
+    let line = tauri::async_runtime::spawn_blocking(move || {
+        rx.recv_timeout(CHAT_TIMEOUT)
+            .map_err(|_| "no response within the chat timeout".to_string())
+    })
+    .await
+    .map_err(|e| format!("chat wait failed: {e}"))??;
+
+    let parsed = serde_json::from_str::<serde_json::Value>(&line)
+        .map_err(|e| format!("unparseable chat response: {e}"))?;
+    if parsed.get("ok").and_then(|b| b.as_bool()) != Some(true) {
+        return Err(parsed
+            .get("error")
+            .and_then(|e| e.as_str())
+            .unwrap_or("chat failed")
+            .to_string());
+    }
+    Ok(ChatReply {
+        text: parsed
+            .pointer("/result/text")
+            .and_then(|t| t.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        session: parsed
+            .pointer("/result/session")
+            .and_then(|s| s.as_str())
+            .map(str::to_string),
+    })
 }
 
 // --- Knowledge enrichment (T12) ---------------------------------------------
@@ -449,7 +544,8 @@ pub fn run() {
             vault_readdir,
             vault_mkdir,
             home_dir,
-            sidecar_ping
+            sidecar_ping,
+            chat_send
         ])
         .setup(|app| {
             // Start the agent sidecar first: the enrichment retry pass below
@@ -458,7 +554,7 @@ pub fn run() {
             let sidecar = app.state::<SidecarState>().0.clone();
             match spawn_sidecar() {
                 Ok((child, stdin, stdout)) => {
-                    spawn_sidecar_reader(sidecar.clone(), stdout);
+                    spawn_sidecar_reader(app.handle().clone(), sidecar.clone(), stdout);
                     *sidecar.proc.lock().unwrap() = Some(SidecarProc {
                         child,
                         stdin,
