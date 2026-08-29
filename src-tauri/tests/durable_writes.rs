@@ -111,9 +111,15 @@ fn a_reader_sees_only_whole_versions_and_no_temp_is_left_behind() {
                         torn.push(bytes.len());
                     }
                 }
-                for name in entries(&dir) {
-                    if name != "note.md" && !siblings.contains(&name) {
-                        siblings.push(name);
+                // Error-tolerant on purpose: this scan races 200 creates and
+                // renames in the same directory, and it is opportunistic
+                // evidence rather than the claim under test.
+                if let Ok(listing) = fs::read_dir(&dir) {
+                    for entry in listing.flatten() {
+                        let name = entry.file_name().to_string_lossy().into_owned();
+                        if name != "note.md" && !siblings.contains(&name) {
+                            siblings.push(name);
+                        }
                     }
                 }
             }
@@ -156,9 +162,16 @@ fn a_failed_write_leaves_no_temp_behind() {
     fs::create_dir(&target).unwrap();
 
     let err = atomic_write(&target, b"whatever", None).unwrap_err();
-    assert!(
-        matches!(err, WriteError::Io(_)),
-        "a rename failure is an I/O failure, not a precondition abort: {err:?}"
+    let WriteError::Io(io) = &err else {
+        panic!("a rename failure is an I/O failure, not a precondition abort: {err:?}");
+    };
+    // Pins *where* it failed. Without this the clean directory below would also
+    // be satisfied by a temp that was never created — i.e. by staging being
+    // broken — and this is the only test covering cleanup-after-staging.
+    assert_eq!(
+        io.kind(),
+        std::io::ErrorKind::IsADirectory,
+        "expected the rename over the directory to fail (staging having succeeded), got: {io}"
     );
     assert_eq!(
         entries(&vault),
