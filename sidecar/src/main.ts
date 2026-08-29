@@ -121,13 +121,21 @@ const rl = createInterface({ input: process.stdin, terminal: false });
 rl.on("line", (line) => {
   const trimmed = line.trim();
   if (trimmed === "") return;
-  let req: Request;
+  let parsed: unknown;
   try {
-    req = JSON.parse(trimmed) as Request;
+    parsed = JSON.parse(trimmed);
   } catch {
     respond(null, { ok: false, error: "invalid JSON" });
     return;
   }
+  // `null`, `[...]` and `"str"` are all valid JSON, so they reach us parsed —
+  // and reading `.id` off any of them (null especially) would throw inside the
+  // line handler and take the process down. Reject non-objects first.
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    respond(null, { ok: false, error: "request must be a JSON object" });
+    return;
+  }
+  const req = parsed as Request;
   if (req.id === undefined || typeof req.method !== "string") {
     respond(null, { ok: false, error: "request must have id and method" });
     return;
