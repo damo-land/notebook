@@ -12,7 +12,8 @@
     "sidecar:install": "npm --prefix sidecar install",
     "sidecar:smoke": "npm --prefix sidecar run smoke",
     "sidecar:mcp": "npm --prefix sidecar run mcp",
-    "sidecar:mcp:demo": "npm --prefix sidecar run mcp:demo"
+    "sidecar:mcp:demo": "npm --prefix sidecar run mcp:demo",
+    "sidecar:enrich:demo": "npm --prefix sidecar run enrich:demo --"
   },
   "dependencies": {
     "react": "^19.1.0",

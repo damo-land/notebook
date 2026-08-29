@@ -8,6 +8,7 @@
     "smoke": "tsx src/smoke.ts",
     "mcp": "tsx src/mcp.ts",
     "mcp:demo": "tsx scripts/mcp-demo.ts",
+    "enrich:demo": "tsx scripts/enrich-demo.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

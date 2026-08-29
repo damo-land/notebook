@@ -14,6 +14,33 @@ export class NotAuthenticatedError extends Error {
 export interface RunPromptOptions {
   /** Model override; defaults to NOTEBOOK_MODEL env var, else the SDK default. */
   model?: string;
+  /**
+   * Built-in tools to make available, e.g. `["WebFetch"]`. Default `[]` — a
+   * single-shot text call with no tools at all.
+   */
+  tools?: string[];
+  /**
+   * Tools auto-approved without a permission prompt. A tool listed in `tools`
+   * but not here falls through to `permissionMode`, which in this
+   * non-interactive process means the call stalls or is denied — so anything
+   * in `tools` normally belongs here too. (Verified against
+   * `Options.tools` / `Options.allowedTools` in the installed SDK's sdk.d.ts
+   * and the Agent SDK TypeScript reference.)
+   */
+  allowedTools?: string[];
+  /** Turn budget. Must be > 1 for a tool round trip. Default 1. */
+  maxTurns?: number;
+  /**
+   * Observation-only callback, fired once per `tool_use` block the model
+   * actually emits. It changes nothing about the call. It exists because a
+   * text reply cannot distinguish a page the model FETCHED from a page it
+   * merely recalls, so the enrichment proof script needs to see the tool
+   * invocation itself. (`SDKAssistantMessage.message.content` carries the
+   * Messages API blocks; `tool_use` is `{ type, id, name, input }` — verified
+   * against the installed SDK's sdk.d.ts and @anthropic-ai/sdk's
+   * `BetaToolUseBlock`.)
+   */
+  onToolUse?(name: string, input: unknown): void;
 }
 
 let warnedAboutApiKey = false;
@@ -40,7 +67,7 @@ function stripApiKey(): void {
 const AUTH_ERROR_PATTERN =
   /auth|login|logged in|credential|api key|x-api-key|setup-token|oauth|token expired|401/i;
 
-/** Single-shot prompt -> plain text response. No tools, one turn. */
+/** Prompt -> plain text response. No tools and one turn unless `opts` says otherwise. */
 export async function runPrompt(
   text: string,
   opts: RunPromptOptions = {},
@@ -54,11 +81,23 @@ export async function runPrompt(
       prompt: text,
       options: {
         model,
-        tools: [],
-        maxTurns: 1,
+        tools: opts.tools ?? [],
+        allowedTools: opts.allowedTools,
+        maxTurns: opts.maxTurns ?? 1,
         persistSession: false,
       },
     })) {
+      if (opts.onToolUse !== undefined && message.type === "assistant") {
+        const content: unknown = message.message.content;
+        if (Array.isArray(content)) {
+          for (const block of content) {
+            const b = block as { type?: unknown; name?: unknown; input?: unknown };
+            if (b.type === "tool_use" && typeof b.name === "string") {
+              opts.onToolUse(b.name, b.input);
+            }
+          }
+        }
+      }
       if (message.type === "result") {
         if (message.subtype === "success") {
           // Unauthed surfaces as a "success" result with is_error: true and

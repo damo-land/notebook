@@ -1,8 +1,23 @@
 // Sidecar entry point: long-running process speaking line-delimited JSON over
 // stdio. Request: {id, method, params?} -> Response: {id, ok, result|error}.
-// v1 methods: ping (no LLM), prompt ({text} -> LLM response text).
+// v1 methods: ping (no LLM), prompt ({text} -> LLM response text),
+// enrich ({vaultDir, path, related?} -> append-only pass over a knowledge note).
 import { createInterface } from "node:readline";
+import { enrichNote, type RelatedNote } from "./enrich.ts";
 import { runPrompt } from "./llm.ts";
+
+/** Tolerant coercion of the `related` payload sent by the Rust dispatcher. */
+function toRelated(value: unknown): RelatedNote[] {
+  if (!Array.isArray(value)) return [];
+  const out: RelatedNote[] = [];
+  for (const entry of value) {
+    const r = entry as { id?: unknown; title?: unknown };
+    if (typeof r?.id === "string" && r.id !== "") {
+      out.push({ id: r.id, title: typeof r.title === "string" ? r.title : "" });
+    }
+  }
+  return out;
+}
 
 interface Request {
   id: number | string;
@@ -30,6 +45,25 @@ async function handle(req: Request): Promise<void> {
           break;
         }
         respond(req.id, { ok: true, result: await runPrompt(text) });
+        break;
+      }
+      case "enrich": {
+        const vaultDir = req.params?.["vaultDir"];
+        const path = req.params?.["path"];
+        if (typeof vaultDir !== "string" || vaultDir === "" || typeof path !== "string" || path === "") {
+          respond(req.id, {
+            ok: false,
+            error: "enrich requires params.vaultDir and params.path (non-empty strings)",
+          });
+          break;
+        }
+        // Throws on any failure, which the catch below turns into ok:false —
+        // the note file is left untouched and unmarked, so the app retries it.
+        const result = await enrichNote(
+          { vaultDir, path, related: toRelated(req.params?.["related"]) },
+          { runPrompt },
+        );
+        respond(req.id, { ok: true, result });
         break;
       }
       default:
