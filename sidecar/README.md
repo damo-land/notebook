@@ -71,6 +71,18 @@ delta and close the request early. `turn` is the caller's own label for the
 turn, echoed back so late chunks from a turn that already timed out are never
 attributed to a newer one.
 
+**Chunks are a preview; the response is the answer.** A chat turn gets several
+round trips, and every assistant text delta of every one of them is emitted as
+a chunk — including anything the model says before it reaches for Grep or Read
+("I'll search the vault for that."). The `result` in the closing line is the
+*final* assistant turn alone. So the chunks are a superset of the answer and
+end with it; they equal it only when the model answered without narrating
+first, which is its choice and not something either side controls. A client
+rendering chunks live must therefore **overwrite** what it rendered with
+`result` when the response line arrives — which is exactly what the chat view
+does (`finishTurn` in `src/lib/chat-transcript.ts`). Treating the accumulated
+chunks as the answer would leave a preamble stranded in front of it.
+
 Responses are routed back **by request id**: the Rust side keeps a map of
 in-flight ids and a single stdout reader thread hands each response line to
 whichever caller asked for that id. A minutes-long `enrich` job and a
@@ -112,6 +124,12 @@ Two callbacks report progress without changing the call: `onText(delta)` fires
 per streamed `text_delta` (turning on `Options.includePartialMessages`; only
 text is forwarded, never tool-argument or thinking deltas), and
 `onSessionId(id)` fires with the completed turn's `session_id`.
+
+`onText` fires for every text delta of **every** permitted round trip, while
+`runPrompt` returns the `result` message — the final assistant turn alone. The
+deltas are therefore a superset of the return value and end with it, equal to
+it only when the model answered in one turn. The return value is the
+authority; see the [streaming lines](#streaming-lines) note above.
 
 ## Enrichment
 
@@ -212,18 +230,35 @@ npm run sidecar:chat:demo -- --real    # one live call, cites a seeded note
 Both seed a temp vault with a note carrying an invented keyword plus two
 decoys and drive the same `chatTurn` / `chatPromptOptions` code, so the free
 run is a genuine dry run of the paid one. Asserted on both paths: the vault
-scoping above, that responses stream (the deltas concatenate to exactly the
-final answer), that a turn yields only `{text, session}` — the sidecar keeps
-no transcript — and that the vault is byte-identical afterwards, recursively
-and including dotfiles.
+scoping above, the streaming contract below, that a turn yields only
+`{text, session}` — the sidecar keeps no transcript — and that the vault is
+byte-identical afterwards, recursively and including dotfiles.
 
-The stubbed path additionally pins down what a live reply cannot: that turn 1
-sends no `resume` and turn 2 resumes turn 1's id, that an empty message is
-rejected before any model call, and — by spawning the real stdio server with a
-deliberately invalid `chat` request — that the method is dispatched and that a
-bad chat request leaves `ping` routing intact. `--real` is the load-bearing
-version of the "nothing was written to the vault" check, and the only path
-that shows the answer actually citing a note id.
+**The streaming contract, in both shapes.** What streams depends on a choice
+the model makes: it may answer directly (one assistant turn — the deltas then
+happen to equal the answer), or it may narrate, search, and answer in a later
+turn (the narration streams too, so the deltas exceed the answer). A proof
+that only held in the first shape would pass or fail on the model's mood, so
+the stubbed path drives *both* shapes at the `runPrompt` seam and asserts one
+contract that holds in each: the returned text is the final assistant turn
+alone, it arrived in multiple deltas, it is the **tail** of the stream, and
+replaying the deltas through the chat view's own reducers
+(`src/lib/chat-transcript.ts`) and then its `finishTurn` overwrite leaves the
+user looking at exactly the returned text — narration and all discarded. The
+narrate shape additionally asserts that the deltas do **not** equal the
+answer, which is what stops the weaker equality claim creeping back in.
+`--real` runs the same contract against a live turn (with the trailing-
+whitespace boundary normalised, since nothing here controls whether the CLI
+keeps a final newline on `result`) and prints which of the two shapes that
+turn took.
+
+The stubbed path additionally pins down what a live reply cannot: that the
+first turn sends no `resume` and a later one resumes its id, that an empty
+message is rejected before any model call, and — by spawning the real stdio
+server with a deliberately invalid `chat` request — that the method is
+dispatched and that a bad chat request leaves `ping` routing intact. `--real`
+is the load-bearing version of the "nothing was written to the vault" check,
+and the only path that shows the answer actually citing a note id.
 
 The demo removes its temp vault but not the SDK session that `persistSession`
 wrote for it, so a `--real` run leaves one directory behind under

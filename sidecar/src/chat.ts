@@ -85,7 +85,15 @@ export function chatPromptOptions(vaultDir: string, session?: string): RunPrompt
   };
 }
 
-/** One chat turn. `onText` receives the answer in streaming deltas. */
+/**
+ * One chat turn.
+ *
+ * `onText` receives the turn's assistant text in streaming deltas — all of it,
+ * including anything the model says before it calls Grep or Read. The
+ * returned `text` is the final assistant turn alone and is what the caller
+ * must display; the stream is a preview of it, not a transcript of it. See
+ * `RunPromptOptions.onText`.
+ */
 export async function chatTurn(
   params: ChatTurnParams,
   deps: ChatDeps,

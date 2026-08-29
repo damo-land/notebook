@@ -75,14 +75,30 @@ export interface RunPromptOptions {
    */
   onToolUse?(name: string, input: unknown): void;
   /**
-   * Streaming text. Fired for every `text_delta` the model emits, in order, so
-   * a caller can render the answer as it arrives; the concatenation of the
-   * deltas is the same string this function finally returns. Setting it turns
-   * on `includePartialMessages`, which adds `stream_event` messages carrying
-   * one Messages API streaming event each (`SDKPartialAssistantMessage` in the
-   * installed sdk.d.ts). Only `text_delta` is forwarded — `input_json_delta`
-   * (tool arguments) and `thinking_delta` are deliberately dropped, since they
-   * are not part of the answer.
+   * Streaming text, so a caller can render an answer as it arrives. Fired for
+   * every `text_delta` the model emits, in order, across ALL of the turn's
+   * permitted round trips.
+   *
+   * That last part is the whole contract, and it is NOT "the deltas
+   * concatenate to the return value". With `maxTurns > 1` the model may say
+   * something before it calls a tool — "Let me search the vault for that." —
+   * and that sentence streams through here like any other text. What this
+   * function returns is the `result` message: the FINAL assistant turn alone.
+   * So in general the stream is a superset of the return value and ends with
+   * it, and they are equal only when the model answered without narrating
+   * first. Which of the two happens is the model's choice, turn by turn.
+   *
+   * The return value is therefore the authority. A caller that renders deltas
+   * live must overwrite what it rendered with the returned string when the
+   * call resolves (see `appendDelta` / `finishTurn` in
+   * src/lib/chat-transcript.ts), or a preamble can be left sitting in front of
+   * the answer.
+   *
+   * Setting this turns on `includePartialMessages`, which adds `stream_event`
+   * messages carrying one Messages API streaming event each
+   * (`SDKPartialAssistantMessage` in the installed sdk.d.ts). Only `text_delta`
+   * is forwarded — `input_json_delta` (tool arguments) and `thinking_delta`
+   * are deliberately dropped, since they are never shown.
    */
   onText?(delta: string): void;
   /**
