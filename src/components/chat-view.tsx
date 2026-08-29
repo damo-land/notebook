@@ -17,18 +17,19 @@
 // sidecar emits each text delta as a `chat-chunk` Tauri event on the way. The
 // answer is appended to the transcript as an empty, `streaming` turn up front
 // and filled in by those events, then overwritten with the authoritative
-// final text when the command resolves.
+// final text when the command resolves. That overwrite is load-bearing, not
+// cosmetic: the deltas are every assistant text delta of the turn, so they can
+// include something the model said before it reached for Grep or Read, while
+// the returned text is the final assistant turn alone. The stream is a
+// preview; `reply.text` is the answer. Both reducers live in
+// src/lib/chat-transcript.ts so that contract is provable without a DOM.
 
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { appendDelta, finishTurn, type ChatTurn } from "../lib/chat-transcript";
 
-export interface ChatTurn {
-  role: "you" | "notebook";
-  text: string;
-  /** True while this answer is still streaming in. */
-  streaming?: boolean;
-}
+export type { ChatTurn };
 
 /** `chat_send` return value (src-tauri/src/lib.rs ChatReply). */
 interface ChatReply {
@@ -78,11 +79,7 @@ export function ChatView({ turns, setTurns, session, setSession, onClose }: Chat
   useEffect(() => {
     const unlisten = listen<ChatChunk>("chat-chunk", (event) => {
       if (event.payload.turn !== activeTurn) return; // a turn we no longer track
-      setTurns((prev) => {
-        const last = prev[prev.length - 1];
-        if (last === undefined || last.streaming !== true) return prev;
-        return [...prev.slice(0, -1), { ...last, text: last.text + event.payload.text }];
-      });
+      setTurns((prev) => appendDelta(prev, event.payload.text));
     });
     return () => {
       void unlisten.then((f) => f());
@@ -104,11 +101,7 @@ export function ChatView({ turns, setTurns, session, setSession, onClose }: Chat
 
   /** Replace the in-progress answer with its final text (or an error note). */
   const finish = (text: string) => {
-    setTurns((prev) => {
-      const last = prev[prev.length - 1];
-      if (last === undefined || last.streaming !== true) return prev;
-      return [...prev.slice(0, -1), { role: last.role, text }];
-    });
+    setTurns((prev) => finishTurn(prev, text));
   };
 
   const send = async (text: string) => {
@@ -122,8 +115,9 @@ export function ChatView({ turns, setTurns, session, setSession, onClose }: Chat
     try {
       const reply = await invoke<ChatReply>("chat_send", { text, session, turn });
       setSession(reply.session);
-      // Authoritative: also repairs any deltas missed while this view was
-      // unmounted.
+      // Authoritative: also repairs a partial or over-long stream — deltas
+      // missed while this view was unmounted, and anything the model said
+      // before it went searching, which streamed but is not the answer.
       finish(reply.text);
     } catch (err) {
       console.error("chat failed:", err);
