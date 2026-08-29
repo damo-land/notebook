@@ -30,6 +30,17 @@ export interface RunPromptOptions {
   allowedTools?: string[];
   /** Turn budget. Must be > 1 for a tool round trip. Default 1. */
   maxTurns?: number;
+  /**
+   * Observation-only callback, fired once per `tool_use` block the model
+   * actually emits. It changes nothing about the call. It exists because a
+   * text reply cannot distinguish a page the model FETCHED from a page it
+   * merely recalls, so the enrichment proof script needs to see the tool
+   * invocation itself. (`SDKAssistantMessage.message.content` carries the
+   * Messages API blocks; `tool_use` is `{ type, id, name, input }` — verified
+   * against the installed SDK's sdk.d.ts and @anthropic-ai/sdk's
+   * `BetaToolUseBlock`.)
+   */
+  onToolUse?(name: string, input: unknown): void;
 }
 
 let warnedAboutApiKey = false;
@@ -76,6 +87,17 @@ export async function runPrompt(
         persistSession: false,
       },
     })) {
+      if (opts.onToolUse !== undefined && message.type === "assistant") {
+        const content: unknown = message.message.content;
+        if (Array.isArray(content)) {
+          for (const block of content) {
+            const b = block as { type?: unknown; name?: unknown; input?: unknown };
+            if (b.type === "tool_use" && typeof b.name === "string") {
+              opts.onToolUse(b.name, b.input);
+            }
+          }
+        }
+      }
       if (message.type === "result") {
         if (message.subtype === "success") {
           // Unauthed surfaces as a "success" result with is_error: true and

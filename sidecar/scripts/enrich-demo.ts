@@ -37,6 +37,25 @@ import {
 
 const real = process.argv.includes("--real");
 
+// A stub must never be able to masquerade as a real run. `npm run <script>
+// --real` (and the same thing via an npm alias that forgets to pass `--`)
+// silently swallows the flag as an npm config and exports it as
+// `npm_config_real` instead of delivering it to argv. Without this guard the
+// demo would run STUBBED while the reviewer believed they had exercised the
+// live path — which is exactly the verification trap this file exists to
+// avoid. If the flag was requested but did not arrive, fail loudly.
+if (!real && process.env["npm_config_real"] !== undefined) {
+  console.error(
+    "FATAL: `--real` was requested but npm swallowed it as a config flag, so " +
+      "this run would have been STUBBED while looking real.\n" +
+      "Use one of:\n" +
+      "  npm run sidecar:enrich:demo -- --real\n" +
+      "  npm --prefix sidecar run enrich:demo -- --real\n" +
+      "  npx tsx sidecar/scripts/enrich-demo.ts --real",
+  );
+  process.exit(1);
+}
+
 let failures = 0;
 
 function assert(cond: boolean, msg: string): void {
@@ -150,11 +169,27 @@ async function scenarioMain(): Promise<void> {
     const groceriesBefore = await readFile(groceriesPath);
     const taxesBefore = await readFile(taxesPath);
 
+    // Every tool the model actually invoked. On the real run this is the only
+    // evidence that separates a page that was FETCHED from one the model
+    // recalls: the reply text alone cannot tell those apart.
+    const toolUses: Array<{ name: string; input: unknown }> = [];
+
     // The stub deliberately misbehaves the way a model can: a tag containing a
     // comma (which would silently split into two tags) and a wiki-link to a
     // note that does not exist.
     const deps: EnrichDeps = real
-      ? { runPrompt: (await import("../src/llm.ts")).runPrompt }
+      ? await (async () => {
+          const { runPrompt } = await import("../src/llm.ts");
+          return {
+            runPrompt: (text: string, opts = {}) =>
+              runPrompt(text, {
+                ...opts,
+                onToolUse: (name, input) => {
+                  toolUses.push({ name, input });
+                },
+              }),
+          } satisfies EnrichDeps;
+        })()
       : stubDeps(
           "```json\n" +
             JSON.stringify({
@@ -250,15 +285,36 @@ async function scenarioMain(): Promise<void> {
     );
 
     if (real) {
-      // Bookmark behaviour: the model actually fetched the page. example.com's
-      // body is about it being reserved for illustrative/documentation use.
+      // Bookmark behaviour, proved in two halves.
+      console.log("\ntool calls observed:", JSON.stringify(toolUses, null, 2));
       assert(result.fetchedUrls.includes(PUBLIC_URL), "the note's URL was offered to WebFetch");
-      const lower = appended.toLowerCase();
+
+      // (a) "enrichment fetches it (SDK web tools)" — the model really called
+      //     WebFetch, and called it against THIS note's URL. Matching on the
+      //     host rather than the exact string so a normalised or redirected
+      //     form ("https://example.com/") still counts as a fetch.
+      const fetches = toolUses.filter((t) => t.name === "WebFetch");
       assert(
-        ["example", "illustrat", "document", "domain", "iana", "reserved"].some((w) =>
-          lower.includes(w),
-        ),
-        "appended section summarises the fetched page",
+        fetches.length > 0,
+        `WebFetch was actually invoked (tools used: ${toolUses.map((t) => t.name).join(", ") || "none"})`,
+      );
+      const host = new URL(PUBLIC_URL).host;
+      assert(
+        fetches.some((t) => JSON.stringify(t.input ?? null).includes(host)),
+        `WebFetch was invoked against ${host}`,
+      );
+
+      // (b) "the appended section summarises the target" — require several
+      //     terms drawn from what the page actually says. The old check passed
+      //     on "example"/"domain"/"document", which merely restating the URL
+      //     satisfies; these are page content, and two of them together are
+      //     not something a summary gets by accident.
+      const lower = appended.toLowerCase();
+      const pageTerms = ["illustrat", "literature", "prior coordination", "permission", "reserved", "iana"];
+      const hits = pageTerms.filter((w) => lower.includes(w));
+      assert(
+        hits.length >= 2,
+        `appended section summarises the fetched page (matched: ${JSON.stringify(hits)})`,
       );
     } else {
       // Stub-only: the deterministic guards, which a real reply cannot pin down.
