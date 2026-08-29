@@ -18,7 +18,7 @@ export interface IndexedNote {
   tags: string[];
 }
 
-/** Full-text search over note bodies, plus title substring match. */
+/** Full-text search over note bodies, plus title and tag substring match. */
 export function searchNotes(text: string): Promise<IndexedNote[]> {
   return invoke("search_notes", { text });
 }

@@ -251,3 +251,15 @@ body {
 .tasks-footer {
   text-align: center;
 }
+
+/* search view (T10) — same row language as the tasks view */
+.search-view {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.search-view .chip-kind {
+  flex: none;
+}

@@ -207,7 +207,11 @@ fn row_to_note(conn: &Connection, row: &rusqlite::Row<'_>) -> Result<NoteRow> {
 
 const NOTE_COLS: &str = "id, path, kind, created, title, done, deadline, alert";
 
-/// Full-text search over note bodies (FTS5) plus a LIKE fallback on titles.
+/// Full-text search over note bodies (FTS5) plus a LIKE fallback on titles
+/// and tags. Tags live outside the body (frontmatter is stripped before the
+/// FTS insert), so they need their own clause. PoC limit: the tag clause is a
+/// single LIKE over the whole query, so a multi-word query never matches a
+/// tag — tags are single tokens in practice.
 pub fn search_notes(conn: &Connection, text: &str) -> Result<Vec<NoteRow>> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -224,6 +228,7 @@ pub fn search_notes(conn: &Connection, text: &str) -> Result<Vec<NoteRow>> {
         "SELECT {NOTE_COLS} FROM notes
          WHERE id IN (SELECT id FROM notes_fts WHERE notes_fts MATCH ?1)
             OR title LIKE ?2
+            OR id IN (SELECT note_id FROM tags WHERE tag LIKE ?2)
          ORDER BY created DESC"
     ))?;
     let mut out = Vec::new();

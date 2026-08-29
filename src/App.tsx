@@ -14,18 +14,20 @@ import { parseDateEntry, parseDateTimeEntry } from "./lib/date-entry";
 import { onOpenNote } from "./lib/note-editor-bus";
 import { CommandPalette, type CommandItem } from "./components/command-palette";
 import { NoteEditor } from "./components/note-editor";
+import { SearchView } from "./components/search-view";
 import { TasksView } from "./components/tasks-view";
 import "./App.css";
 
 type Mode = "plain" | "task" | "knowledge";
 type FieldId = "deadline" | "category" | "alert";
 
-// `/` palette in plain capture. search/chat are placeholders until their
-// tasks land: shown greyed, never selectable.
+// `/` palette in plain capture. `task`/`knowledge` switch capture mode;
+// `search` switches the view (T10). `chat` is a placeholder until its task
+// lands: shown greyed, never selectable.
 const COMMANDS: CommandItem[] = [
   { id: "task", label: "task", hint: "capture a task" },
   { id: "knowledge", label: "knowledge", hint: "capture knowledge" },
-  { id: "search", label: "search", hint: "coming soon", disabled: true },
+  { id: "search", label: "search", hint: "search the vault" },
   { id: "chat", label: "chat", hint: "coming soon", disabled: true },
 ];
 
@@ -65,11 +67,11 @@ function App() {
   // replaces the capture UI entirely, so capture's keydown chain (palette,
   // field menu, mode Esc, Enter-saves) is unmounted and cannot fire.
   const [editing, setEditing] = useState<Note | null>(null);
-  // Top-level view: capture UI (default) or the T8 tasks list. Orthogonal to
-  // `mode` (capture state persists underneath) and below `editing` in render
-  // priority — Enter on a task opens the editor over the tasks view, and
-  // closing the editor drops back into it.
-  const [view, setView] = useState<"capture" | "tasks">("capture");
+  // Top-level view: capture UI (default), the T8 tasks list, or the T10
+  // search box. Orthogonal to `mode` (capture state persists underneath) and
+  // below `editing` in render priority — Enter on a row opens the editor over
+  // the view, and closing the editor drops back into it.
+  const [view, setView] = useState<"capture" | "tasks" | "search">("capture");
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const vaultDirRef = useRef<string | null>(null);
@@ -205,6 +207,19 @@ function App() {
     textareaRef.current?.focus();
   };
 
+  /** Run the selected palette command: a capture mode, or a view switch. */
+  const runCommand = (id: string) => {
+    if (id === "search") {
+      // Clearing the body matters: the "/search" text was palette input, and
+      // leaving it would land Esc-back-from-search in an open palette.
+      setBody("");
+      setPaletteIndex(0);
+      setView("search");
+      return;
+    }
+    enterMode(id as Mode);
+  };
+
   const onBodyKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // 1. Palette navigation (plain capture, menu open).
     if (paletteOpen) {
@@ -218,7 +233,7 @@ function App() {
       }
       if (event.key === "Enter") {
         event.preventDefault();
-        if (paletteSelected) enterMode(paletteSelected.id as Mode);
+        if (paletteSelected) runCommand(paletteSelected.id);
         return; // no selectable command -> Enter is a no-op, nothing saved
       }
       if (event.key === "Escape") {
@@ -358,6 +373,14 @@ function App() {
     return (
       <main className="overlay">
         <TasksView onClose={() => setView("capture")} />
+      </main>
+    );
+  }
+
+  if (view === "search") {
+    return (
+      <main className="overlay">
+        <SearchView onClose={() => setView("capture")} />
       </main>
     );
   }
