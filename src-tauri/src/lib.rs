@@ -6,8 +6,9 @@ use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tauri::{
     menu::{Menu, MenuItem},
@@ -141,6 +142,115 @@ fn reindex(state: State<IndexState>) -> Result<usize, String> {
     index::reindex(&conn, &state.vault_dir).map_err(|e| e.to_string())
 }
 
+// --- Durable note writes -----------------------------------------------------
+//
+// Every write to a note in the user's vault goes through `atomic_write`. A
+// plain `fs::write` truncates the file and then refills it: a crash in between
+// leaves one of the user's real notes half written, and the vault is the source
+// of truth for this app — there is nothing to restore it from.
+//
+// Both note-write sites in this crate use it: `vault_write_file` below (the
+// command every frontend save funnels through) and `alerts::mark_alerted`.
+
+/// Serial number for staging file names, so two writes from this process can
+/// never pick the same temp path.
+static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Why a write through [`atomic_write`] did not happen.
+///
+/// `Changed` is deliberately *not* an I/O failure: it means the caller's
+/// compare-and-swap precondition did not hold, nothing was written, and the
+/// target is byte-identical to what the other writer left there. Callers that
+/// need to tell the two apart (see `alerts::take_due_alerts`) match on it.
+#[derive(Debug)]
+pub enum WriteError {
+    /// The target no longer holds the bytes the caller read.
+    Changed,
+    Io(std::io::Error),
+}
+
+impl std::fmt::Display for WriteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            // I/O failures render exactly as the underlying `io::Error` did
+            // before, so error strings built from this keep their old shape.
+            WriteError::Io(e) => write!(f, "{e}"),
+            WriteError::Changed => write!(f, "file changed on disk since it was read"),
+        }
+    }
+}
+
+impl From<std::io::Error> for WriteError {
+    fn from(e: std::io::Error) -> Self {
+        WriteError::Io(e)
+    }
+}
+
+/// The file [`atomic_write`] stages `path`'s new contents in before renaming it
+/// over the target.
+///
+/// It is always a *sibling* of the target — `with_file_name`, so this holds
+/// even for a bare relative filename. That placement is the whole trick:
+/// `rename(2)` is only atomic within one filesystem, so staging in `/tmp` or in
+/// the app data dir would be a cross-device rename that either fails outright
+/// or degrades into a non-atomic copy.
+///
+/// The name is hidden, unique per process and per call, and never ends in
+/// `.md`: the vault indexer scans `*.md`, and a temp that matched would trigger
+/// a spurious reindex even for the moment it exists.
+pub fn temp_path_for(path: &Path) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    path.with_file_name(format!(
+        ".notebook-{}-{nanos}-{seq}.tmp",
+        std::process::id()
+    ))
+}
+
+/// Writes `data` to `path` so that a concurrent reader — or a reader after a
+/// crash — sees either the complete old file or the complete new one.
+///
+/// `expect` makes the write a compare-and-swap: when it is `Some(bytes)`, the
+/// target's current contents are re-read immediately before the rename and must
+/// still equal `bytes`, otherwise nothing is written and [`WriteError::Changed`]
+/// comes back. A re-read that *fails* counts as changed too: the bytes cannot be
+/// confirmed, so they must not be overwritten. `None` always overwrites.
+///
+/// (The compare and the rename are two syscalls, so this is a narrow-window CAS,
+/// not a lock. It closes the window that matters here — a whole read, edit and
+/// write-back cycle — not the microseconds between the two.)
+pub fn atomic_write(path: &Path, data: &[u8], expect: Option<&[u8]>) -> Result<(), WriteError> {
+    let tmp = temp_path_for(path);
+
+    if let Err(e) = stage(&tmp, data) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(WriteError::Io(e));
+    }
+    if let Some(expected) = expect {
+        if !matches!(std::fs::read(path), Ok(current) if current == expected) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(WriteError::Changed);
+        }
+    }
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(WriteError::Io(e));
+    }
+    Ok(())
+}
+
+/// Fills the staging file. `sync_all` before the rename is what makes the
+/// rename worth anything: renaming a file whose bytes are still in the page
+/// cache would survive a process crash but not a power cut.
+fn stage(tmp: &Path, data: &[u8]) -> std::io::Result<()> {
+    let mut file = std::fs::File::create(tmp)?;
+    file.write_all(data)?;
+    file.sync_all()
+}
+
 // Minimal filesystem bridge for the TS vault library (src/lib/vault): the
 // frontend's VaultFs is implemented over these commands. Plain std::fs; the
 // path clamp that keeps notes inside the vault lives in TS (notePath).
@@ -150,9 +260,13 @@ fn vault_read_file(path: String) -> Result<String, String> {
     std::fs::read_to_string(&path).map_err(|e| format!("read {path}: {e}"))
 }
 
+/// Atomic, but with **no** precondition: the user is the authority for their
+/// own saves. Refusing a write because a background job touched the note in the
+/// meantime would lose what they just typed.
 #[tauri::command]
 fn vault_write_file(path: String, data: String) -> Result<(), String> {
-    std::fs::write(&path, data).map_err(|e| format!("write {path}: {e}"))
+    atomic_write(Path::new(&path), data.as_bytes(), None)
+        .map_err(|e| format!("write {path}: {e}"))
 }
 
 #[tauri::command]
@@ -279,11 +393,12 @@ fn spawn_sidecar() -> Result<(Child, ChildStdin, ChildStdout), String> {
 ///
 /// Nothing in here may kill the thread: a malformed line just fails the
 /// `serde_json` parse, falls through the chunk check, matches no waiter and is
-/// logged — leaving ping and enrich routing untouched.
+/// logged — leaving ping and enrich routing untouched. A line that cannot even
+/// be *read* is skipped the same way, by `for_each_readable_line`.
 fn spawn_sidecar_reader(app: AppHandle, sidecar: Arc<Sidecar>, stdout: ChildStdout) {
     use tauri::Emitter;
     std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+        for_each_readable_line(BufReader::new(stdout), |line| {
             let parsed = serde_json::from_str::<serde_json::Value>(&line).ok();
             let is_chunk = parsed
                 .as_ref()
@@ -296,7 +411,7 @@ fn spawn_sidecar_reader(app: AppHandle, sidecar: Arc<Sidecar>, stdout: ChildStdo
                         eprintln!("[notebook] emit chat-chunk failed: {e}");
                     }
                 }
-                continue;
+                return;
             }
             let waiter = parsed
                 .and_then(|v| v.get("id").and_then(|i| i.as_u64()))
@@ -307,8 +422,26 @@ fn spawn_sidecar_reader(app: AppHandle, sidecar: Arc<Sidecar>, stdout: ChildStdo
                 }
                 None => eprintln!("[notebook] unmatched sidecar response: {line}"),
             }
-        }
+        });
     });
+}
+
+/// Hands every readable line of `reader` to `on_line`, skipping and logging the
+/// ones that cannot be read.
+///
+/// `Lines` yields `Err` for a line that is not valid UTF-8 — but `read_until`
+/// has already consumed those bytes, so iteration simply resumes at the next
+/// line. The `map_while(Result::ok)` this replaces ended the iterator on the
+/// first such error instead, killing the reader thread: every pending request
+/// waiter (a UI ping, a background enrichment job) then blocked forever with no
+/// one left to answer it. Only EOF ends the loop now.
+pub fn for_each_readable_line<R: BufRead>(reader: R, mut on_line: impl FnMut(String)) {
+    for line in reader.lines() {
+        match line {
+            Ok(line) => on_line(line),
+            Err(e) => eprintln!("[notebook] skipped unreadable sidecar line: {e}"),
+        }
+    }
 }
 
 fn kill_sidecar(app: &AppHandle) {

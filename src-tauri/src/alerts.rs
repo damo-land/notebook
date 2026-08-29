@@ -17,6 +17,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::Connection;
 
 use crate::index::{self, NoteRow};
+use crate::WriteError;
 
 /// How often the resident scheduler re-checks for due alerts.
 pub const POLL_INTERVAL_SECS: u64 = 30;
@@ -99,13 +100,36 @@ pub fn is_alerted(text: &str) -> bool {
 /// marker is appended as the block's last key line (or replaces an existing
 /// `alerted:` line), which is exactly what the TS frontmatter serializer would
 /// emit for an unknown key — so the file still round-trips there too.
-pub fn mark_alerted(path: &Path) -> std::io::Result<()> {
-    let text = std::fs::read_to_string(path)?;
-    let Some((block, end)) = frontmatter_block(&text) else {
-        return Err(std::io::Error::new(
+///
+/// The write is atomic *and* conditional: the exact bytes read here are the
+/// precondition for the write (see [`mark_alerted_with`]). This is a background
+/// job touching a file the user may be editing at the same moment, so unlike a
+/// user-initiated save it must lose the race rather than win it.
+pub fn mark_alerted(path: &Path) -> Result<(), WriteError> {
+    let seen = std::fs::read(path)?;
+    mark_alerted_with(path, &seen)
+}
+
+/// [`mark_alerted`] with the bytes the caller already read passed in — the same
+/// marking path, with the read separated from the write so the compare-and-swap
+/// window is the caller's to control (and so a test can widen it).
+///
+/// `seen` must be what the caller read from `path`. Immediately before the
+/// rename, the target's current bytes are compared against it; if another writer
+/// got there first, nothing is written and [`WriteError::Changed`] comes back
+/// with the file byte-identical to what that writer left.
+pub fn mark_alerted_with(path: &Path, seen: &[u8]) -> Result<(), WriteError> {
+    let text = std::str::from_utf8(seen).map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("note is not utf-8: {} ({e})", path.display()),
+        )
+    })?;
+    let Some((block, end)) = frontmatter_block(text) else {
+        return Err(WriteError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!("note has no frontmatter block: {}", path.display()),
-        ));
+        )));
     };
     let mut lines: Vec<&str> = block.lines().collect();
     match lines.iter().position(|l| is_marker_line(l)) {
@@ -114,7 +138,8 @@ pub fn mark_alerted(path: &Path) -> std::io::Result<()> {
         None => lines.push(MARKER_LINE),
     }
     // `&text[end..]` is the closing "\n---\n" plus the body, untouched.
-    std::fs::write(path, format!("---\n{}{}", lines.join("\n"), &text[end..]))
+    let marked = format!("---\n{}{}", lines.join("\n"), &text[end..]);
+    crate::atomic_write(path, marked.as_bytes(), Some(seen))
 }
 
 // ---------------------------------------------------------------------------
@@ -158,10 +183,22 @@ pub fn take_due_alerts(conn: &Connection, now: &str) -> Vec<PendingAlert> {
             }
         }
         // Never notify about a note we failed to mark: it would fire again on
-        // every pass from here on.
-        if let Err(e) = mark_alerted(path) {
-            eprintln!("alerts: cannot mark {} alerted: {e}", row.path);
-            continue;
+        // every pass from here on. A refused precondition is the same deal —
+        // someone else was writing the file, so skip this pass and try again on
+        // the next poll, having fired nothing.
+        match mark_alerted(path) {
+            Ok(()) => {}
+            Err(WriteError::Changed) => {
+                eprintln!(
+                    "alerts: {} changed while marking; retrying next pass",
+                    row.path
+                );
+                continue;
+            }
+            Err(e) => {
+                eprintln!("alerts: cannot mark {} alerted: {e}", row.path);
+                continue;
+            }
         }
         fired.push(PendingAlert {
             id: row.id,
