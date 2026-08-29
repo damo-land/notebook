@@ -9,6 +9,7 @@
     "mcp": "tsx src/mcp.ts",
     "mcp:demo": "tsx scripts/mcp-demo.ts",
     "enrich:demo": "tsx scripts/enrich-demo.ts",
+    "chat:demo": "tsx scripts/chat-demo.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

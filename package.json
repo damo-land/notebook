@@ -13,7 +13,8 @@
     "sidecar:smoke": "npm --prefix sidecar run smoke",
     "sidecar:mcp": "npm --prefix sidecar run mcp",
     "sidecar:mcp:demo": "npm --prefix sidecar run mcp:demo",
-    "sidecar:enrich:demo": "npm --prefix sidecar run enrich:demo --"
+    "sidecar:enrich:demo": "npm --prefix sidecar run enrich:demo --",
+    "sidecar:chat:demo": "npm --prefix sidecar run chat:demo --"
   },
   "dependencies": {
     "react": "^19.1.0",
