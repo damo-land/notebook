@@ -31,6 +31,39 @@ export interface RunPromptOptions {
   /** Turn budget. Must be > 1 for a tool round trip. Default 1. */
   maxTurns?: number;
   /**
+   * Working directory for the SDK session; the root the built-in filesystem
+   * tools operate from. Defaults to the sidecar's own cwd. (`Options.cwd` in
+   * the installed sdk.d.ts.)
+   */
+  cwd?: string;
+  /**
+   * Extra instruction appended to the Claude Code preset system prompt. The
+   * preset is kept deliberately — a bare `systemPrompt` string REPLACES it,
+   * which would drop the built-in tool instructions. (`Options.systemPrompt`
+   * accepts `{ type: "preset", preset: "claude_code", append }` — verified in
+   * the installed sdk.d.ts.)
+   */
+  systemPromptAppend?: string;
+  /**
+   * Which filesystem settings the spawned CLI loads. Default (omitted) is the
+   * CLI's own: user + project + local, which would pull in a CLAUDE.md and a
+   * `.claude/settings.json` sitting in `cwd`. Pass `[]` for SDK isolation
+   * mode. (`Options.settingSources` in the installed sdk.d.ts.)
+   */
+  settingSources?: [];
+  /**
+   * Session id to continue, from a previous turn's `onSessionId`. Requires
+   * that turn to have run with `persistSession: true`.
+   * (`Options.resume` in the installed sdk.d.ts.)
+   */
+  resume?: string;
+  /**
+   * Write the session transcript to `~/.claude/projects/` so a later `resume`
+   * can load it. Default false: one-shot callers want nothing on disk.
+   * (`Options.persistSession` in the installed sdk.d.ts.)
+   */
+  persistSession?: boolean;
+  /**
    * Observation-only callback, fired once per `tool_use` block the model
    * actually emits. It changes nothing about the call. It exists because a
    * text reply cannot distinguish a page the model FETCHED from a page it
@@ -41,6 +74,23 @@ export interface RunPromptOptions {
    * `BetaToolUseBlock`.)
    */
   onToolUse?(name: string, input: unknown): void;
+  /**
+   * Streaming text. Fired for every `text_delta` the model emits, in order, so
+   * a caller can render the answer as it arrives; the concatenation of the
+   * deltas is the same string this function finally returns. Setting it turns
+   * on `includePartialMessages`, which adds `stream_event` messages carrying
+   * one Messages API streaming event each (`SDKPartialAssistantMessage` in the
+   * installed sdk.d.ts). Only `text_delta` is forwarded — `input_json_delta`
+   * (tool arguments) and `thinking_delta` are deliberately dropped, since they
+   * are not part of the answer.
+   */
+  onText?(delta: string): void;
+  /**
+   * Fires once, with the SDK session id of the turn that just completed, so a
+   * multi-turn caller can pass it back as `resume`. Read from the `result`
+   * message every time rather than assumed stable across a resume.
+   */
+  onSessionId?(id: string): void;
 }
 
 let warnedAboutApiKey = false;
@@ -84,9 +134,32 @@ export async function runPrompt(
         tools: opts.tools ?? [],
         allowedTools: opts.allowedTools,
         maxTurns: opts.maxTurns ?? 1,
-        persistSession: false,
+        persistSession: opts.persistSession ?? false,
+        cwd: opts.cwd,
+        settingSources: opts.settingSources,
+        resume: opts.resume,
+        includePartialMessages: opts.onText !== undefined,
+        systemPrompt:
+          opts.systemPromptAppend === undefined
+            ? undefined
+            : { type: "preset", preset: "claude_code", append: opts.systemPromptAppend },
       },
     })) {
+      if (opts.onText !== undefined && message.type === "stream_event") {
+        // One Messages API streaming event per message. Text arrives as
+        // content_block_delta / text_delta; everything else is skipped.
+        const event = message.event as {
+          type?: unknown;
+          delta?: { type?: unknown; text?: unknown };
+        };
+        if (
+          event.type === "content_block_delta" &&
+          event.delta?.type === "text_delta" &&
+          typeof event.delta.text === "string"
+        ) {
+          opts.onText(event.delta.text);
+        }
+      }
       if (opts.onToolUse !== undefined && message.type === "assistant") {
         const content: unknown = message.message.content;
         if (Array.isArray(content)) {
@@ -99,6 +172,7 @@ export async function runPrompt(
         }
       }
       if (message.type === "result") {
+        opts.onSessionId?.(message.session_id);
         if (message.subtype === "success") {
           // Unauthed surfaces as a "success" result with is_error: true and
           // result text "Not logged in · Please run /login" (verified against
