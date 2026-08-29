@@ -52,8 +52,24 @@ Response:
 | `ping`   | —                  | `"pong"` (no LLM call)  |
 | `prompt` | `{ text: string }` | model response as text  |
 | `enrich` | `{ vaultDir, path, related? }` | `EnrichResult` — see [Enrichment](#enrichment) |
+| `chat`   | `{ vaultDir, text, session?, turn? }` | `{ text, session }` — see [Chat](#chat) |
 
-Later tasks (chat) add methods; the framing stays the same.
+### Streaming lines
+
+`chat` is the one method that writes to stdout before it answers. While the
+model streams, it emits **unsolicited** lines:
+
+```json
+{"type": "chunk", "id": 3, "turn": "1", "text": "One note: "}
+```
+
+These are not responses: they carry no `ok`, they do not close the request,
+and the normal `{id, ok, result}` line still follows. A reader must check
+`type` **before** looking `id` up in its pending map — a chunk line carries
+the request id too, so checking afterwards would hand the waiter its first
+delta and close the request early. `turn` is the caller's own label for the
+turn, echoed back so late chunks from a turn that already timed out are never
+attributed to a newer one.
 
 Responses are routed back **by request id**: the Rust side keeps a map of
 in-flight ids and a single stdout reader thread hands each response line to
@@ -80,6 +96,22 @@ that nothing can answer in a background process. `maxTurns` must be > 1 for a
 tool round trip. (Option shape verified against `Options.tools` /
 `Options.allowedTools` in the installed SDK's `sdk.d.ts` and the Agent SDK
 TypeScript reference, not from memory.)
+
+Chat adds five more passthroughs, all verified the same way against the
+installed `sdk.d.ts`: `cwd` (`Options.cwd`, the root the filesystem tools work
+from), `settingSources` (`Options.settingSources` — omitted means the CLI
+loads user + project + local settings, `[]` is isolation mode), `resume` and
+`persistSession` (`Options.resume` / `Options.persistSession` — a session can
+only be resumed if the turn that created it persisted), and
+`systemPromptAppend`, which becomes
+`{ type: "preset", preset: "claude_code", append }`. The preset matters: a
+bare `systemPrompt` string *replaces* the Claude Code prompt and would drop
+the built-in tool instructions.
+
+Two callbacks report progress without changing the call: `onText(delta)` fires
+per streamed `text_delta` (turning on `Options.includePartialMessages`; only
+text is forwarded, never tool-argument or thinking deltas), and
+`onSessionId(id)` fires with the completed turn's `session_id`.
 
 ## Enrichment
 
@@ -140,6 +172,58 @@ cannot pin down — the link cap clamping a 6-link reply down to 3, and failure
 safety (a model error and an unusable reply each leave the note byte-identical
 with no marker). `--real` swaps in the actual `runPrompt` and additionally
 asserts the appended section summarises the fetched page.
+
+## Chat
+
+`src/chat.ts` implements the `chat` method: one turn of the overlay's `/chat`
+view, answered by the SDK with the vault as its working directory so the reply
+can cite real notes.
+
+**Scoping.** The agent gets `cwd` = the vault, the tool set `Read`/`Glob`/
+`Grep`, nothing in `additionalDirectories`, and `settingSources: []`. The tool
+set is read-only by construction — no `Write`, `Edit`, `Bash` or `WebFetch` —
+so the model cannot modify the vault or reach the network, and `[]` settings
+stop a `CLAUDE.md` or `.claude/settings.json` that happens to be sitting in
+the vault from steering the agent or widening its permissions (a notes
+directory is user content, not a project). Note the limit: `cwd` sets the
+default root, and absolute-path reads *outside* the vault have not been proven
+blocked — the guarantee here is the read-only tool set plus a working
+directory that contains only notes, not a filesystem sandbox.
+
+**Continuity** is the SDK's own. The module is stateless: each turn carries
+the previous turn's `session` id and gets one back (re-read every turn, not
+assumed stable across a resume), so the conversation lives in the SDK session
+under `~/.claude/projects/` — *outside* the vault. The human-readable
+transcript is never persisted at all: it lives in the frontend's React state
+for the length of the app session and dies with the process.
+
+**No persona.** The only prompt customisation is `CHAT_SYSTEM_APPEND`, a
+format-and-grounding instruction (search before answering, cite note ids, keep
+it short). No name, no voice, no character, no "about the user" memory —
+persona is a recorded v1 non-goal.
+
+### Demo / proof
+
+```
+npm run sidecar:chat:demo              # stubbed — no model call, no spend
+npm run sidecar:chat:demo -- --real    # one live call, cites a seeded note
+```
+
+Both seed a temp vault with a note carrying an invented keyword plus two
+decoys and drive the same `chatTurn` / `chatPromptOptions` code, so the free
+run is a genuine dry run of the paid one. Asserted on both paths: the vault
+scoping above, that responses stream (the deltas concatenate to exactly the
+final answer), that a turn yields only `{text, session}` — the sidecar keeps
+no transcript — and that the vault is byte-identical afterwards, recursively
+and including dotfiles.
+
+The stubbed path additionally pins down what a live reply cannot: that turn 1
+sends no `resume` and turn 2 resumes turn 1's id, that an empty message is
+rejected before any model call, and — by spawning the real stdio server with a
+deliberately invalid `chat` request — that the method is dispatched and that a
+bad chat request leaves `ping` routing intact. `--real` is the load-bearing
+version of the "nothing was written to the vault" check, and the only path
+that shows the answer actually citing a note id.
 
 ## Auth
 
