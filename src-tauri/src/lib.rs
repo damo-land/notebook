@@ -1,3 +1,4 @@
+pub mod alerts;
 pub mod enrich;
 pub mod index;
 
@@ -64,6 +65,45 @@ fn hide_overlay(app: AppHandle) {
     if let Ok(panel) = app.get_webview_panel(OVERLAY_WINDOW_LABEL) {
         panel.hide();
     }
+}
+
+/// Resident alert scheduler (T9): fires a macOS notification for every note
+/// whose `alert` datetime has passed and that isn't yet marked alerted.
+///
+/// The first pass runs immediately — that is the catch-up for alerts that came
+/// due while the app was closed — and then every `POLL_INTERVAL_SECS`. It must
+/// be spawned AFTER the initial `reindex`, or the catch-up pass would query an
+/// empty index. `take_due_alerts` marks each note on disk before returning it,
+/// so nothing fires twice.
+fn spawn_alert_scheduler(app: AppHandle, conn: Arc<Mutex<rusqlite::Connection>>) {
+    use tauri_plugin_notification::NotificationExt;
+    std::thread::spawn(move || loop {
+        let now = alerts::now_iso_utc();
+        let due = match conn.lock() {
+            Ok(conn) => alerts::take_due_alerts(&conn, &now),
+            Err(e) => {
+                eprintln!("alerts: index lock poisoned: {e}");
+                Vec::new()
+            }
+        };
+        for note in due {
+            let body = if note.title.trim().is_empty() {
+                note.id.clone()
+            } else {
+                note.title.clone()
+            };
+            if let Err(e) = app
+                .notification()
+                .builder()
+                .title("Notebook reminder")
+                .body(body)
+                .show()
+            {
+                eprintln!("alerts: notification failed for {}: {e}", note.id);
+            }
+        }
+        std::thread::sleep(Duration::from_secs(alerts::POLL_INTERVAL_SECS));
+    });
 }
 
 /// SQLite index state. The watcher handle is held here to keep it alive.
@@ -378,6 +418,7 @@ fn dispatch_enrichment(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_nspanel::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_shortcuts([TOGGLE_OVERLAY_SHORTCUT, TASKS_VIEW_SHORTCUT])
@@ -462,6 +503,10 @@ pub fn run() {
                     None
                 }
             };
+            // Alert scheduler: after the initial reindex above, so its first
+            // (catch-up) pass sees the whole vault.
+            spawn_alert_scheduler(app.handle().clone(), conn.clone());
+
             app.manage(IndexState {
                 conn,
                 vault_dir,
