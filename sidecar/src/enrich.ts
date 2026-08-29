@@ -10,10 +10,19 @@
 // so a note whose enrichment fails is left exactly as the user saved it — and
 // with no `enriched` marker, which is what makes the app's next start retry it.
 //
+// The write itself is a compare-and-swap onto a temp file in the note's own
+// directory, renamed over the target. The model call can run for minutes, so
+// the in-memory copy read at job start goes stale: the alerts scheduler (which
+// polls every 30s) or the user's own editor can land a write inside that
+// window. A plain writeFile of the stale content would silently erase it —
+// including an `alerted: true` marker, which would re-fire the notification.
+//
 // Standalone by design, like src/mcp.ts: its own copy of the frontmatter
 // helpers rather than an import across into the root package's src/. The
 // format is the one in src/lib/vault/frontmatter.ts and src-tauri/src/index.rs.
-import { readFile, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 
 // --- frontmatter (mirrors src/lib/vault/frontmatter.ts) ----------------------
 
@@ -283,6 +292,60 @@ export function parseEnrichment(reply: string): Enrichment {
   return { tags, context };
 }
 
+/**
+ * Thrown when the note changed on disk while the job was running, so the
+ * enriched content built from the stale copy was NOT written.
+ *
+ * Deliberately the same shape as the model/parse failures — throws before any
+ * write, note untouched, no `enriched` marker, so the next app start retries it
+ * — but distinguishable: an in-process caller checks `instanceof` or `.code`,
+ * and over the stdio protocol (where main.ts flattens errors to `err.message`)
+ * the stable `enrich conflict:` message prefix is the discriminator.
+ */
+export class EnrichConflictError extends Error {
+  readonly code = "enrich_conflict";
+  constructor(message: string) {
+    super(`enrich conflict: ${message}`);
+    this.name = "EnrichConflictError";
+  }
+}
+
+/**
+ * Compare-and-swap write: replaces `path` with `next` only if the file still
+ * holds exactly `expected`.
+ *
+ * The temp file lives in the note's OWN directory, because rename(2) is only
+ * atomic within a single filesystem — a temp in /tmp would be a cross-device
+ * rename, which either fails or degrades to a copy. Its name cannot collide
+ * between concurrent writers and deliberately does not end in `.md`: the Rust
+ * indexer scans for that extension (src-tauri/src/index.rs) and a stray match
+ * would trigger a spurious reindex. It is removed on the failure path too.
+ */
+async function casWrite(path: string, expected: Buffer, next: string): Promise<void> {
+  const tmp = join(dirname(path), `.${basename(path)}.enrich-${process.pid}-${randomUUID()}.tmp`);
+  await writeFile(tmp, next, "utf8");
+  try {
+    // The check sits here, after the temp file exists, so that nothing but the
+    // rename itself follows it — the smallest window we can leave.
+    let current: Buffer;
+    try {
+      current = await readFile(path);
+    } catch (err) {
+      throw new EnrichConflictError(`note is no longer readable: ${(err as Error).message}`);
+    }
+    if (!current.equals(expected)) {
+      throw new EnrichConflictError(
+        `the note changed on disk during enrichment (${expected.length} bytes at job start, ` +
+          `${current.length} now); not writing, so the next start retries it`,
+      );
+    }
+    await rename(tmp, path);
+  } catch (err) {
+    await unlink(tmp).catch(() => {});
+    throw err;
+  }
+}
+
 /** The appended block, kept clearly separated from the body it follows. */
 function contextSection(body: string, context: string): string {
   const lead = body === "" || body.endsWith("\n") ? "\n" : "\n\n";
@@ -295,7 +358,8 @@ function contextSection(body: string, context: string): string {
  * Returns `skipped` (without touching the file) when the note is already
  * enriched or is not a knowledge note. Throws on any failure — the caller
  * reports it and the note stays untouched and unmarked, so the next app start
- * retries it.
+ * retries it. `EnrichConflictError` is that same shape for the one failure the
+ * caller may want to tell apart: the note changed while the job was running.
  */
 export async function enrichNote(
   params: EnrichParams,
@@ -304,8 +368,10 @@ export async function enrichNote(
   const path = clampToVault(params.vaultDir, params.path);
   const related = params.related ?? [];
 
-  const raw = await readFile(path, "utf8");
-  const { fm, body } = parseNoteFile(raw);
+  // The exact bytes the enrichment is built from; the write below refuses to
+  // land unless the file still holds them.
+  const rawBytes = await readFile(path);
+  const { fm, body } = parseNoteFile(rawBytes.toString("utf8"));
 
   if (fm.data["kind"] !== "knowledge") {
     return { path, status: "skipped", reason: "not a knowledge note", addedTags: [], links: [], fetchedUrls: [] };
@@ -348,7 +414,9 @@ export async function enrichNote(
   if (source !== undefined) fm.data["source"] = source;
   fm.data["enriched"] = (deps.now?.() ?? new Date()).toISOString();
 
-  await writeFile(path, serializeNoteFile(fm, newBody), "utf8");
+  // Throws EnrichConflictError without writing anything if someone else
+  // touched the note while the model was thinking.
+  await casWrite(path, rawBytes, serializeNoteFile(fm, newBody));
 
   return {
     path,

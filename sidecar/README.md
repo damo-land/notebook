@@ -160,6 +160,24 @@ Nothing rewrites, reorders or reflows user text. Supporting rules:
 - **Every failure throws before the write.** A note whose enrichment fails is
   left exactly as the user saved it, *and* without an `enriched` marker, which
   is what makes the app's next start retry it.
+- **The write is a compare-and-swap, and it is atomic.** The model call can run
+  for minutes, so the copy read at job start goes stale — the alerts scheduler
+  (30s poll) or the user's own editor can write to the note inside that window,
+  and a plain write of the stale copy would silently erase it. Immediately
+  before replacing the file, enrichment re-reads it and compares the bytes
+  against what it read at job start; if they differ it writes nothing at all
+  and throws `EnrichConflictError`, so the concurrent write survives and the
+  still-unmarked note is retried at next start. Otherwise the new content goes
+  to a temp file **in the note's own directory** — `rename(2)` is only atomic
+  within one filesystem, so a temp in `/tmp` would defeat the point — and is
+  renamed over the target, so a reader never sees a half-written note. The temp
+  is removed on the failure path too, and its name never ends in `.md` so the
+  indexer cannot mistake it for a note. The conflict is thrown rather than
+  returned, so it behaves like every other failure, but it is distinguishable:
+  `instanceof EnrichConflictError` (or `err.code`) in process, and the stable
+  `enrich conflict:` message prefix over the stdio protocol, which flattens
+  errors to their message. The Rust worker does not yet split it out of its
+  generic "job failed, note left untouched" log line.
 - **`enriched` is the idempotence marker.** It lives in the vault file rather
   than an index column, so it survives a db wipe. A note that carries it is
   skipped without a model call.
@@ -185,11 +203,28 @@ rules (`sidecar/scripts/enrich-demo.ts`).
 
 The stubbed run is the default on purpose: the invariants above can be
 re-verified by anyone, any time, without spending a prompt. It injects the
-model reply via `EnrichDeps.runPrompt`, and adds two scenarios a real reply
-cannot pin down — the link cap clamping a 6-link reply down to 3, and failure
-safety (a model error and an unusable reply each leave the note byte-identical
-with no marker). `--real` swaps in the actual `runPrompt` and additionally
-asserts the appended section summarises the fetched page.
+model reply via `EnrichDeps.runPrompt`, and adds four scenarios a real reply
+cannot pin down:
+
+- the link cap clamping a 6-link reply down to 3;
+- failure safety — a model error and an unusable reply each leave the note
+  byte-identical with no marker;
+- **the compare-and-swap**, driven from the `runPrompt` seam: the stub writes
+  `alerted: true` into the note while the "model" is thinking (exactly what the
+  alerts scheduler does mid-job) and the demo asserts that line is still there
+  afterwards, that the job aborted with a conflict rather than a plain failure,
+  that no `enriched` marker was written, and that no temp file was left behind.
+  A second pass with nothing racing it then enriches normally, which is what
+  stops the fix from quietly disabling enrichment;
+- **the stdin guard**, against the real spawned server: `null`, `[1, 2, 3]` and
+  `"just a string"` are all valid JSON but not requests. Each draws
+  `{"id":null,"ok":false,"error":"request must be a JSON object"}` and a
+  following `ping` still answers `pong` on the same process — a guard that
+  read `.id` off the parsed value first would have died on the `null` line and
+  taken every in-flight job with it.
+
+`--real` swaps in the actual `runPrompt` and additionally asserts the appended
+section summarises the fetched page.
 
 ## Chat
 

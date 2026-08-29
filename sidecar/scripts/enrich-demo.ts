@@ -13,7 +13,14 @@
 //     Rust parser's rules (src-tauri/src/index.rs parse_note_file).
 //
 // It also proves the failure-safe and idempotence paths, which have no other
-// mechanical proof on the sidecar side.
+// mechanical proof on the sidecar side, plus two durability properties that
+// only the stub can drive:
+//
+//   * a write landing on the note *during* the model call is not erased — the
+//     compare-and-swap aborts instead, leaving no marker so the note is
+//     retried — while an untouched note still enriches normally,
+//   * a non-object JSON line on the real sidecar's stdin draws a structured
+//     error instead of killing the process.
 //
 // Run (stubbed — no model call, no spend; this is the default):
 //     npm --prefix sidecar run enrich:demo
@@ -24,16 +31,23 @@
 // The stub path exists so this file's invariants — append-only, tag merging
 // and sanitising, the link cap, the `enriched` marker — can be re-verified by
 // anyone at any time without spending a prompt.
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
 import {
+  EnrichConflictError,
   MAX_LINKS,
   enrichNote,
   parseNoteFile,
+  serializeNoteFile,
   type EnrichDeps,
   type RelatedNote,
 } from "../src/enrich.ts";
+
+const sidecarDir = fileURLToPath(new URL("..", import.meta.url));
 
 const real = process.argv.includes("--real");
 
@@ -480,6 +494,190 @@ async function scenarioFailureSafe(): Promise<void> {
   }
 }
 
+// --- scenario 4: a concurrent write during the job (stub only, no spend) -----
+//
+// The defect this proves fixed: `enrichNote` reads the note, awaits a model
+// call that can run for minutes, then writes from that stale copy. The alerts
+// scheduler polls every 30s, so it can mark a note `alerted: true` inside that
+// window — and the stale write would erase the marker, so the due-alerts query
+// re-selects the note and the user gets the notification twice.
+//
+// The stub sits exactly where the model call sits, so a write from inside it
+// is a write *during* the job. That is how the original defect was reproduced.
+
+/** Every leftover in the vault dir that is neither a note nor a directory. */
+async function strayFiles(vaultDir: string): Promise<string[]> {
+  const entries = await readdir(vaultDir);
+  return entries.filter((e) => !e.endsWith(".md"));
+}
+
+async function scenarioConcurrentWrite(): Promise<void> {
+  const vaultDir = await mkdtemp(join(tmpdir(), "notebook-enrich-race-"));
+  console.log("\n=== scenario: concurrent write during the job (compare-and-swap) ===");
+  try {
+    const notePath = await seedNote(
+      vaultDir,
+      "20260828-140000-race.md",
+      "id: 20260828-140000-race\ncreated: 2026-08-28T14:00:00.000Z\nkind: knowledge\ntags: [alerts]\nalert: 2026-08-28T15:00:00.000Z",
+      "Race note\n\nThe alerts scheduler can fire while enrichment is thinking.\n",
+    );
+    const REPLY = JSON.stringify({
+      tags: ["scheduling"],
+      context: "Background on why a background job must never write from a stale read.",
+    });
+
+    // --- (a) someone writes to the note mid-job: the write must NOT land ---
+
+    // What the racing writer left on disk, captured for a byte comparison.
+    const raced: string[] = [];
+    const racingDeps: EnrichDeps = {
+      runPrompt: async () => {
+        // Exactly what the alerts scheduler does: add `alerted: true` to the
+        // frontmatter and write the note back.
+        const { fm, body } = parseNoteFile(await readFile(notePath, "utf8"));
+        fm.data["alerted"] = true;
+        const next = serializeNoteFile(fm, body);
+        await writeFile(notePath, next, "utf8");
+        raced.push(next);
+        return REPLY;
+      },
+    };
+
+    const conflict = await enrichNote({ vaultDir, path: notePath, related: [] }, racingDeps).then(
+      () => null,
+      (err: Error) => err,
+    );
+    const afterRace = await readFile(notePath, "utf8");
+    console.log("\n--- note after the raced job ---");
+    console.log(afterRace);
+    console.log("--- end of note ---");
+
+    // THE race proof. Pre-fix, the stale write erases this line.
+    assert(
+      afterRace.includes("alerted: true"),
+      "the concurrent `alerted: true` write survives the enrichment job",
+    );
+    assert(
+      raced.length === 1 && afterRace === raced[0],
+      "the note is byte-identical to what the concurrent writer left (no partial merge)",
+    );
+    assert(
+      parseNoteFile(afterRace).fm.data["enriched"] === undefined,
+      "no `enriched` marker after an aborted write -> the next app start retries it",
+    );
+    assert(!afterRace.includes("## Context"), "nothing was appended on the abort path");
+    assert((await strayFiles(vaultDir)).length === 0, "abort path leaves no temp file behind");
+
+    // The abort is distinguishable from a job failure, so a caller can tell
+    // "someone else touched the file" from "the job failed".
+    assert(
+      conflict instanceof EnrichConflictError,
+      `the abort throws EnrichConflictError (got: ${conflict === null ? "no error at all" : conflict.constructor.name})`,
+    );
+    assert(
+      conflict !== null && /^enrich conflict:/.test(conflict.message),
+      `the wire-level error carries the \`enrich conflict:\` prefix (${conflict?.message ?? "none"})`,
+    );
+    const jobFailure = await enrichNote(
+      { vaultDir, path: notePath, related: [] },
+      { runPrompt: async () => { throw new Error("Not authenticated with Claude Code."); } },
+    ).then(() => null, (err: Error) => err);
+    assert(
+      jobFailure !== null && !(jobFailure instanceof EnrichConflictError),
+      "a model failure is NOT reported as a conflict (the two are distinguishable)",
+    );
+
+    // --- (b) nothing touches the note: enrichment still writes normally ---
+
+    const beforeQuiet = await readFile(notePath, "utf8");
+    const quiet = await enrichNote(
+      { vaultDir, path: notePath, related: [] },
+      stubDeps(REPLY),
+    );
+    const afterQuiet = await readFile(notePath, "utf8");
+    assert(quiet.status === "enriched", "unchanged file: the retry enriches normally");
+    assert(
+      typeof parseNoteFile(afterQuiet).fm.data["enriched"] === "string",
+      "unchanged file: the `enriched` marker is set (the fix does not disable enrichment)",
+    );
+    assert(afterQuiet.includes("## Context"), "unchanged file: the `## Context` section is appended");
+    const bodyQuietBefore = bodyBytes(Buffer.from(beforeQuiet, "utf8"));
+    const bodyQuietAfter = bodyBytes(Buffer.from(afterQuiet, "utf8"));
+    assert(
+      Buffer.compare(bodyQuietAfter.subarray(0, bodyQuietBefore.length), bodyQuietBefore) === 0,
+      "unchanged file: the original body bytes are still a verbatim prefix",
+    );
+    assert(
+      afterQuiet.includes("alerted: true"),
+      "unchanged file: the earlier `alerted: true` line is carried through the write",
+    );
+    assert((await strayFiles(vaultDir)).length === 0, "success path leaves no temp file behind");
+  } finally {
+    await rm(vaultDir, { recursive: true, force: true });
+  }
+}
+
+// --- scenario 5: non-object stdin payloads (stub only, no spend) -------------
+
+/**
+ * Spawns the real stdio server and feeds it the three JSON payloads that parse
+ * but are not request objects. `JSON.parse("null")` succeeds, and a guard that
+ * reads `.id` off the result throws inside the line handler and takes the whole
+ * process down — one malformed line would end every in-flight job. Each must
+ * draw a structured error instead, and `ping` must still work afterwards.
+ */
+async function scenarioStdinGuard(): Promise<void> {
+  console.log("\n=== scenario: non-object stdin payloads do not kill the sidecar ===");
+  const child = spawn(process.execPath, ["--import", "tsx", "src/main.ts"], {
+    cwd: sidecarDir,
+    stdio: ["pipe", "pipe", "ignore"],
+  });
+  const lines: string[] = [];
+  let exited = false;
+  const rl = createInterface({ input: child.stdout, terminal: false });
+  const settled = new Promise<void>((resolve) => {
+    rl.on("line", (line) => {
+      lines.push(line);
+      if (lines.length >= 4) resolve();
+    });
+    // A crash resolves too, so this scenario fails fast instead of hanging.
+    child.on("exit", () => {
+      exited = true;
+      resolve();
+    });
+  });
+  try {
+    const bad = ["null", "[1, 2, 3]", '"just a string"'];
+    for (const payload of bad) child.stdin.write(`${payload}\n`);
+    child.stdin.write(`${JSON.stringify({ id: 7, method: "ping" })}\n`);
+    await Promise.race([
+      settled,
+      new Promise<void>((resolve) => setTimeout(resolve, 20_000)),
+    ]);
+
+    console.log("sidecar replies:", JSON.stringify(lines, null, 2));
+    assert(!exited, "the sidecar survived three non-object payloads");
+    const replies = lines.map(
+      (l) => JSON.parse(l) as { id: unknown; ok?: boolean; error?: string; result?: unknown },
+    );
+    bad.forEach((payload, i) => {
+      const reply = replies[i];
+      assert(
+        reply !== undefined && reply.ok === false && reply.id === null && typeof reply.error === "string",
+        `\`${payload}\` draws a structured error response (${JSON.stringify(reply ?? null)})`,
+      );
+    });
+    assert(
+      replies.find((r) => r.id === 7)?.result === "pong",
+      "a subsequent ping on the same process still returns pong",
+    );
+  } finally {
+    rl.close();
+    child.stdin.end();
+    child.kill();
+  }
+}
+
 // --- run ---------------------------------------------------------------------
 
 await scenarioMain();
@@ -488,6 +686,8 @@ if (!real) {
   // WebFetch/bookmark behaviour that a stub cannot.
   await scenarioLinkCap();
   await scenarioFailureSafe();
+  await scenarioConcurrentWrite();
+  await scenarioStdinGuard();
 }
 
 if (failures > 0) {
