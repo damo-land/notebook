@@ -12,6 +12,7 @@ import {
 import { homeDir, tauriVaultFs } from "./lib/vault-fs";
 import { parseDateEntry, parseDateTimeEntry } from "./lib/date-entry";
 import { onOpenNote } from "./lib/note-editor-bus";
+import { ChatView, type ChatTurn } from "./components/chat-view";
 import { CommandPalette, type CommandItem } from "./components/command-palette";
 import { NoteEditor } from "./components/note-editor";
 import { SearchView } from "./components/search-view";
@@ -22,13 +23,12 @@ type Mode = "plain" | "task" | "knowledge";
 type FieldId = "deadline" | "category" | "alert";
 
 // `/` palette in plain capture. `task`/`knowledge` switch capture mode;
-// `search` switches the view (T10). `chat` is a placeholder until its task
-// lands: shown greyed, never selectable.
+// `search` (T10) and `chat` (T14) switch the view.
 const COMMANDS: CommandItem[] = [
   { id: "task", label: "task", hint: "capture a task" },
   { id: "knowledge", label: "knowledge", hint: "capture knowledge" },
   { id: "search", label: "search", hint: "search the vault" },
-  { id: "chat", label: "chat", hint: "coming soon", disabled: true },
+  { id: "chat", label: "chat", hint: "ask about your notes" },
 ];
 
 // `/` field selector. Alert (T9) is offered in plain capture too, so a bare
@@ -67,11 +67,17 @@ function App() {
   // replaces the capture UI entirely, so capture's keydown chain (palette,
   // field menu, mode Esc, Enter-saves) is unmounted and cannot fire.
   const [editing, setEditing] = useState<Note | null>(null);
-  // Top-level view: capture UI (default), the T8 tasks list, or the T10
-  // search box. Orthogonal to `mode` (capture state persists underneath) and
-  // below `editing` in render priority — Enter on a row opens the editor over
-  // the view, and closing the editor drops back into it.
-  const [view, setView] = useState<"capture" | "tasks" | "search">("capture");
+  // Top-level view: capture UI (default), the T8 tasks list, the T10 search
+  // box, or the T14 chat window. Orthogonal to `mode` (capture state persists
+  // underneath) and below `editing` in render priority — Enter on a row opens
+  // the editor over the view, and closing the editor drops back into it.
+  const [view, setView] = useState<"capture" | "tasks" | "search" | "chat">("capture");
+  // Chat transcript and SDK session id (T14). Held here rather than in
+  // ChatView because leaving chat unmounts that component and the criterion
+  // keeps the transcript for the session. In memory only — never written to
+  // the vault.
+  const [chatTurns, setChatTurns] = useState<ChatTurn[]>([]);
+  const [chatSession, setChatSession] = useState<string | null>(null);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const vaultDirRef = useRef<string | null>(null);
@@ -209,12 +215,13 @@ function App() {
 
   /** Run the selected palette command: a capture mode, or a view switch. */
   const runCommand = (id: string) => {
-    if (id === "search") {
-      // Clearing the body matters: the "/search" text was palette input, and
-      // leaving it would land Esc-back-from-search in an open palette.
+    if (id === "search" || id === "chat") {
+      // Clearing the body matters: the "/search" (or "/chat") text was palette
+      // input, and leaving it would land Esc-back-from-the-view in an open
+      // palette.
       setBody("");
       setPaletteIndex(0);
-      setView("search");
+      setView(id);
       return;
     }
     enterMode(id as Mode);
@@ -381,6 +388,20 @@ function App() {
     return (
       <main className="overlay">
         <SearchView onClose={() => setView("capture")} />
+      </main>
+    );
+  }
+
+  if (view === "chat") {
+    return (
+      <main className="overlay">
+        <ChatView
+          turns={chatTurns}
+          setTurns={setChatTurns}
+          session={chatSession}
+          setSession={setChatSession}
+          onClose={() => setView("capture")} // transcript survives in App state
+        />
       </main>
     );
   }

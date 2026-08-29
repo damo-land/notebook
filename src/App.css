@@ -263,3 +263,58 @@ body {
 .search-view .chip-kind {
   flex: none;
 }
+
+/* chat view (T14) — transcript above, message input below */
+.chat-view {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.chat-transcript {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 2px;
+}
+
+.chat-turn {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.chat-role {
+  flex: none;
+  width: 64px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #6a6a6a;
+}
+
+.chat-turn-notebook .chat-role {
+  color: #e8b45a;
+}
+
+.chat-text {
+  flex: 1;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: #e8e8e8;
+}
+
+.chat-turn-you .chat-text {
+  color: #c8c8c8;
+}
+
+.chat-caret {
+  color: #6a6a6a;
+}
