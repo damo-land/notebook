@@ -9,6 +9,11 @@
 // Fetch model: one query per keystroke, no cache — the vault is
 // personal-scale. Out-of-order responses are dropped via the effect's
 // `cancelled` flag, so the list always reflects the latest query.
+//
+// Like the tasks view, this component remounts whenever the view is entered
+// or the editor closes over it, so opening a hit and Esc-ing back lands on an
+// empty search box. Accepted for consistency with T8's model; holding the
+// query would mean lifting state into App.
 
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
