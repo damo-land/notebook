@@ -504,11 +504,9 @@ fn shoot_present_overlay(app: &AppHandle, attempt: u32) {
     let hopped = app.run_on_main_thread(move || {
         match handle.get_webview_panel(OVERLAY_WINDOW_LABEL) {
             Ok(panel) => {
-                // Without this the panel belongs to the desktop Space alone, so
-                // a full-screen app in front puts it on a Space nobody is
-                // looking at. (The shipped overlay has no such behaviour — how
-                // alt+space should behave over a full-screen app is a real
-                // question for a later task; this hook does not change it.)
+                // Redundant with the shipped setup path (which now sets the
+                // same collection behavior once at panel creation), but kept
+                // so a harness run is self-sufficient even if setup changes.
                 use tauri_nspanel::objc2_app_kit::NSWindowCollectionBehavior;
                 panel.set_collection_behavior(
                     NSWindowCollectionBehavior::CanJoinAllSpaces
@@ -1316,6 +1314,21 @@ pub fn run() {
             panel.set_style_mask(
                 tauri_nspanel::objc2_app_kit::NSWindowStyleMask::NonactivatingPanel,
             );
+
+            // Follow the user across Spaces. Without this the panel belongs to
+            // the one desktop Space it first appeared on, so summoning it from
+            // another Space (or over a full-screen app) shows nothing — the
+            // panel is "visible" on a Space nobody is looking at.
+            // FullScreenAuxiliary lets it overlay full-screen apps instead of
+            // bouncing the user out of them. Set once here: collection
+            // behavior sticks to the panel, so every show/toggle inherits it.
+            {
+                use tauri_nspanel::objc2_app_kit::NSWindowCollectionBehavior;
+                panel.set_collection_behavior(
+                    NSWindowCollectionBehavior::CanJoinAllSpaces
+                        | NSWindowCollectionBehavior::FullScreenAuxiliary,
+                );
+            }
 
             // Click-outside dismissal. Clicking anything else makes the panel
             // resign key, and macOS reports that through tao's own window
