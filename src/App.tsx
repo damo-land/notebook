@@ -525,19 +525,12 @@ function App() {
               <span className="chip chip-invalid">alert "{alertAt.raw}" unparsed</span>
             ))}
           {category && <span className="chip">#{category}</span>}
-          {fields.length > 0 && !editingField && !fieldMenuOpen && (
-            <span className="chip-hint">/ for {fields.map((f) => f.label).join(" · ")}</span>
-          )}
         </div>
       )}
       <textarea
         ref={textareaRef}
         className="overlay-input"
-        placeholder={
-          mode === "plain"
-            ? "Type a note… (markdown, Enter to save, / for commands)"
-            : `Describe the ${mode}… (Enter to save, Esc to cancel)`
-        }
+        placeholder={mode === "plain" ? "Note…" : `New ${mode}…`}
         value={body}
         onChange={(e) => {
           setBody(e.target.value);

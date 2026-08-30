@@ -168,16 +168,15 @@ export function ChatView({ turns, setTurns, session, setSession, onClose }: Chat
       </div>
       <input
         ref={inputRef}
-        className="overlay-input"
+        className="overlay-input chat-input"
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         onKeyDown={onKeyDown}
-        placeholder={busy ? "answering…" : "Ask about your notes… (Enter to send)"}
+        placeholder={busy ? "Answering…" : "Ask your notes…"}
         autoFocus
         spellCheck={false}
         aria-label="chat message"
       />
-      <div className="tasks-hint tasks-footer">Enter send · Esc back · Ctrl+W hide</div>
     </div>
   );
 }

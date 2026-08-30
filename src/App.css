@@ -4,6 +4,32 @@
   padding: 0;
 }
 
+/* --- T4 visual language --------------------------------------------------
+   The window material (T2's HudWindow vibrancy) is the only surface. Nothing
+   in here paints an opaque background: hierarchy comes from text opacity and
+   size, separation comes from spacing and hairlines, and the sole fill
+   anywhere is the selection highlight. Three sizes, one family:
+
+     22px  primary input (capture / search / chat)
+     15px  content rows, chat text, editor body
+     12px  metadata — headers, dates, tags, roles
+
+   Colours are white at varying alpha so they sit on the vibrancy rather
+   than on top of it. */
+:root {
+  --font-system:
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+  --text-primary: rgba(255, 255, 255, 0.96);
+  --text-secondary: rgba(255, 255, 255, 0.55);
+  --text-tertiary: rgba(255, 255, 255, 0.35);
+  --hairline: rgba(255, 255, 255, 0.1);
+  --selection: rgba(255, 255, 255, 0.14);
+  --accent-task: #eec078;
+  --accent-knowledge: #7cc4ee;
+  --accent-bad: #ee8c8c;
+  --accent-ok: #8cd48c;
+}
+
 /* Deliberately NOT `height: 100%`. The window's height is driven from the
    content (src/lib/overlay.ts measures `.overlay` and calls `resize_overlay`),
    so the page must size to its content rather than to the window — with a
@@ -13,6 +39,10 @@ html,
 body,
 #root {
   height: auto;
+  /* Transparent all the way down: any opaque layer here would paint over the
+     window's native vibrancy material (T2) and the overlay would read as a
+     flat grey page again. */
+  background: transparent;
 }
 
 /* Past the clamp the content is taller than the window and the page scrolls,
@@ -29,19 +59,13 @@ html::-webkit-scrollbar {
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  /* Transparent so the window's native macOS vibrancy material shows through
-     (src-tauri/src/lib.rs applies NSVisualEffectMaterial::HudWindow). An opaque
-     fill here paints straight over it and the overlay looks exactly as it did
-     before. This one declaration is the only style T2 touches; the visual
-     design — typography, chrome, layout — belongs to T4. */
-  background: transparent;
-  color: #f0f0f0;
+  font-family: var(--font-system);
+  color: var(--text-primary);
 }
 
 .overlay {
   display: flex;
-  padding: 16px;
+  padding: 6px 8px;
 }
 
 /* --- Overlay motion (T3) ----------------------------------------------------
@@ -73,23 +97,42 @@ body {
 }
 /* --- end overlay motion --- */
 
+/* Internal scrollbars (task list, search results, chat transcript): thin,
+   low-alpha thumb, no track. Present only when the content actually
+   overflows, which is the affordance that more rows exist — the window stops
+   growing (the lists are height-capped below) and the bar appears instead. */
+.overlay ::-webkit-scrollbar {
+  width: 5px;
+}
+
+.overlay ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.overlay ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.28);
+  border-radius: 999px;
+}
+
 .capture {
   display: flex;
   flex-direction: column;
-  gap: 8px;
   width: 100%;
 }
 
+/* The primary input. No chrome of its own — no border, no fill, no rounded
+   card: the glyphs sit directly on the panel material, Spotlight-style. */
 .overlay-input {
   width: 100%;
-  padding: 12px 14px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 15px;
-  line-height: 1.5;
-  color: inherit;
-  background: #2a2a2a;
-  border: 1px solid #3a3a3a;
-  border-radius: 8px;
+  padding: 10px 12px;
+  font-family: var(--font-system);
+  font-size: 22px;
+  font-weight: 400;
+  line-height: 1.35;
+  color: var(--text-primary);
+  background: transparent;
+  border: none;
+  border-radius: 0;
   outline: none;
   resize: none;
   /* The element's height is set from its scrollHeight as the text grows, so
@@ -98,131 +141,144 @@ body {
   overflow: hidden;
 }
 
-/* command palette / field selector */
+.overlay-input::placeholder {
+  color: var(--text-tertiary);
+}
+
+/* The note editor shows a whole document, not a one-liner: body size, and a
+   hairline separating it from the metadata line above. */
+.editor-input {
+  font-size: 15px;
+  line-height: 1.5;
+  border-top: 1px solid var(--hairline);
+}
+
+/* Anything below the primary input (palette, field editor, result lists,
+   metadata) sits under one hairline. Spacing does the rest. */
+.under-input {
+  border-top: 1px solid var(--hairline);
+  padding-top: 6px;
+  margin-top: 4px;
+}
+
+/* command palette / field selector — rows under the input, one hairline */
 .palette {
   list-style: none;
-  background: #2a2a2a;
-  border: 1px solid #3a3a3a;
-  border-radius: 8px;
-  overflow: hidden;
-  font-size: 14px;
+  font-size: 15px;
+  border-top: 1px solid var(--hairline);
+  margin-top: 2px;
+  padding-top: 4px;
 }
 
 .palette-empty {
-  padding: 8px 14px;
-  color: #6a6a6a;
+  padding: 8px 12px;
+  color: var(--text-tertiary);
 }
 
 .palette-item {
   display: flex;
   align-items: baseline;
   gap: 10px;
-  padding: 7px 14px;
+  padding: 8px 12px;
+  border-radius: 8px;
 }
 
 .palette-item-selected {
-  background: #3a3f4a;
+  background: var(--selection);
 }
 
 .palette-item-disabled {
-  color: #6a6a6a;
-}
-
-.palette-label {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text-tertiary);
 }
 
 .palette-hint {
   margin-left: auto;
   font-size: 12px;
-  color: #8a8a8a;
+  color: var(--text-secondary);
 }
 
-/* mode chips (kind indicator, deadline, category) */
+.palette-item-selected .palette-hint {
+  color: var(--text-secondary);
+}
+
+/* mode / metadata line (kind, deadline, category, alert): plain small text,
+   no boxes — colour and weight carry the meaning. */
 .chips {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
   flex-wrap: wrap;
+  padding: 8px 12px 2px;
 }
 
 .chip {
-  padding: 2px 10px;
   font-size: 12px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  background: #2a2a2a;
-  border: 1px solid #3a3a3a;
-  border-radius: 999px;
-  color: #c8c8c8;
+  color: var(--text-secondary);
 }
 
 .chip-kind {
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.08em;
+  font-weight: 600;
 }
 
 .chip-task {
-  border-color: #7a5b2a;
-  color: #e8b45a;
+  color: var(--accent-task);
 }
 
 .chip-knowledge {
-  border-color: #2a5b7a;
-  color: #5ab4e8;
+  color: var(--accent-knowledge);
 }
 
 .chip-invalid {
-  border-color: #7a3a3a;
-  color: #e87a7a;
+  color: var(--accent-bad);
 }
 
-.chip-hint {
-  font-size: 12px;
-  color: #6a6a6a;
-}
-
-/* inline field editor (deadline / category) */
+/* inline field editor (deadline / category / alert) */
 .field-editor {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 6px 14px;
-  background: #2a2a2a;
-  border: 1px solid #3a3a3a;
-  border-radius: 8px;
+  padding: 8px 12px 4px;
+  border-top: 1px solid var(--hairline);
+  margin-top: 2px;
 }
 
 .field-label {
   font-size: 12px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  color: #8a8a8a;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-secondary);
 }
 
 .field-input {
   flex: 1;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 14px;
-  color: inherit;
+  font-family: var(--font-system);
+  font-size: 15px;
+  color: var(--text-primary);
   background: transparent;
   border: none;
   outline: none;
 }
 
+.field-input::placeholder {
+  color: var(--text-tertiary);
+}
+
 .field-parse {
   font-size: 12px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  color: #7ac87a;
+  color: var(--accent-ok);
 }
 
 .field-parse-bad {
-  color: #e87a7a;
+  color: var(--accent-bad);
 }
 
 /* tasks view (T8) */
 .tasks-view {
   display: flex;
   flex-direction: column;
-  gap: 8px;
   width: 100%;
   outline: none;
 }
@@ -231,40 +287,42 @@ body {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
+  padding: 10px 12px 8px;
 }
 
 .tasks-title {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 13px;
+  font-size: 12px;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: #e8b45a;
+  letter-spacing: 0.08em;
+  color: var(--text-secondary);
 }
 
 .tasks-filter {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 13px;
-  color: #c8c8c8;
+  font-size: 12px;
+  color: var(--text-secondary);
 }
 
+/* Height-capped: past ~8 rows the list scrolls inside itself (thin scrollbar
+   above) instead of driving the window to the clamp and hiding the overflow
+   behind a hidden page scrollbar. */
 .tasks-list {
   list-style: none;
-  background: #2a2a2a;
-  border: 1px solid #3a3a3a;
-  border-radius: 8px;
   overflow-y: auto;
-  font-size: 14px;
+  max-height: 336px;
+  font-size: 15px;
 }
 
 .task-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 14px;
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
 }
 
 .task-row-selected {
-  background: #3a3f4a;
+  background: var(--selection);
 }
 
 .task-title {
@@ -280,38 +338,25 @@ body {
 
 .task-deadline {
   flex: none;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
-  color: #e8b45a;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
 }
 
 .task-deadline-none {
-  color: #6a6a6a;
+  color: var(--text-tertiary);
 }
 
 .tasks-empty {
-  padding: 8px 14px;
-  background: #2a2a2a;
-  border: 1px solid #3a3a3a;
-  border-radius: 8px;
-  color: #6a6a6a;
-  font-size: 14px;
-}
-
-.tasks-hint {
-  font-size: 12px;
-  color: #6a6a6a;
-}
-
-.tasks-footer {
-  text-align: center;
+  padding: 8px 12px;
+  color: var(--text-tertiary);
+  font-size: 15px;
 }
 
 /* search view (T10) — same row language as the tasks view */
 .search-view {
   display: flex;
   flex-direction: column;
-  gap: 8px;
   width: 100%;
 }
 
@@ -323,7 +368,6 @@ body {
 .chat-view {
   display: flex;
   flex-direction: column;
-  gap: 8px;
   width: 100%;
 }
 
@@ -333,29 +377,29 @@ body {
   gap: 10px;
   max-height: 320px;
   overflow-y: auto;
-  padding: 2px;
+  padding: 8px 12px;
 }
 
 .chat-turn {
   display: flex;
-  gap: 10px;
+  gap: 12px;
   align-items: baseline;
-  font-size: 14px;
+  font-size: 15px;
   line-height: 1.45;
 }
 
 .chat-role {
   flex: none;
-  width: 64px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  width: 72px;
   font-size: 12px;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: #6a6a6a;
+  letter-spacing: 0.08em;
+  color: var(--text-tertiary);
 }
 
 .chat-turn-notebook .chat-role {
-  color: #e8b45a;
+  color: var(--text-secondary);
 }
 
 .chat-text {
@@ -363,13 +407,20 @@ body {
   min-width: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  color: #e8e8e8;
+  color: var(--text-primary);
 }
 
 .chat-turn-you .chat-text {
-  color: #c8c8c8;
+  color: var(--text-secondary);
 }
 
 .chat-caret {
-  color: #6a6a6a;
+  color: var(--text-tertiary);
+}
+
+/* In chat the input sits under the transcript, not above a result list, so
+   the hairline flips to its top edge. */
+.chat-input {
+  border-top: 1px solid var(--hairline);
+  margin-top: 4px;
 }
