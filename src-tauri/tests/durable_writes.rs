@@ -260,3 +260,39 @@ fn an_unreadable_line_does_not_stop_the_reader_loop() {
     );
 }
 
+
+// --- Overlay height clamp (T2) ----------------------------------------------
+//
+// The height comes from the webview, so the bounds have to hold in Rust for
+// values the frontend should never send as well as ones it might.
+
+#[test]
+fn overlay_height_is_clamped_to_the_documented_bounds() {
+    use notebook_lib::{clamp_overlay_height, OVERLAY_MAX_HEIGHT_FRACTION, OVERLAY_MIN_HEIGHT};
+
+    // 60% of a 900pt-tall screen.
+    let max = 900.0 * OVERLAY_MAX_HEIGHT_FRACTION;
+    assert_eq!(max, 540.0);
+
+    // In range: passed through untouched.
+    assert_eq!(clamp_overlay_height(300.0, max), 300.0);
+    assert_eq!(clamp_overlay_height(OVERLAY_MIN_HEIGHT, max), OVERLAY_MIN_HEIGHT);
+    assert_eq!(clamp_overlay_height(max, max), max);
+
+    // Too tall — including a value far past the screen.
+    assert_eq!(clamp_overlay_height(541.0, max), max);
+    assert_eq!(clamp_overlay_height(100_000.0, max), max);
+
+    // Too short, zero and negative.
+    assert_eq!(clamp_overlay_height(10.0, max), OVERLAY_MIN_HEIGHT);
+    assert_eq!(clamp_overlay_height(0.0, max), OVERLAY_MIN_HEIGHT);
+    assert_eq!(clamp_overlay_height(-500.0, max), OVERLAY_MIN_HEIGHT);
+
+    // Non-finite: NaN has no ordering and would slip through a bare `clamp`.
+    assert_eq!(clamp_overlay_height(f64::NAN, max), OVERLAY_MIN_HEIGHT);
+    assert_eq!(clamp_overlay_height(f64::INFINITY, max), OVERLAY_MIN_HEIGHT);
+    assert_eq!(clamp_overlay_height(f64::NEG_INFINITY, max), OVERLAY_MIN_HEIGHT);
+
+    // A screen so short that max < min would make `f64::clamp` panic.
+    assert_eq!(clamp_overlay_height(300.0, 50.0), OVERLAY_MIN_HEIGHT);
+}

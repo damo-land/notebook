@@ -282,10 +282,22 @@ seed_fixture_vault
 # until the whole poll loop had timed out, and the interrupt would report itself
 # as a timeout.
 PANEL=""
+# 1 when PANEL came from the SHOOT_ALLOW_OFFSCREEN fallback rather than from a
+# window the window server is actually compositing.
+PANEL_OFFSCREEN=0
+
+# Prints "<windowId>\t<x>,<y>,<w>,<h>" for the app's panel, or nothing.
+# `$2` = 1 to allow the uncomposited fallback.
+find_panel() {
+  local line
+  line="$(SHOOT_ALLOW_OFFSCREEN="$2" swift "$REPO_ROOT/scripts/shoot-window.swift" "$1" 2>/dev/null || true)"
+  printf '%s' "${line%%$'\n'*}"
+}
 
 wait_for_panel() {
-  local pgid="$1" log_file="$2" deadline=$((SECONDS + READY_TIMEOUT)) app_pid line
+  local pgid="$1" log_file="$2" deadline=$((SECONDS + READY_TIMEOUT)) app_pid line last_pid=""
   PANEL=""
+  PANEL_OFFSCREEN=0
   while [ "$SECONDS" -lt "$deadline" ]; do
     if [ -z "$(group_pids "$pgid")" ]; then
       echo "shoot: the app exited before the panel appeared; see $log_file" >&2
@@ -298,8 +310,8 @@ wait_for_panel() {
       awk -v g="$pgid" -v m="$APP_BIN_MATCH" '$2 == g && index($0, m) { print $1 }')"
     app_pid="${app_pid%%$'\n'*}"
     if [ -n "$app_pid" ]; then
-      line="$(swift "$REPO_ROOT/scripts/shoot-window.swift" "$app_pid" 2>/dev/null || true)"
-      line="${line%%$'\n'*}"
+      last_pid="$app_pid"
+      line="$(find_panel "$app_pid" "")"
       if [ -n "$line" ]; then
         PANEL="$line"
         return 0
@@ -307,6 +319,18 @@ wait_for_panel() {
     fi
     sleep 1
   done
+
+  # Only now, having given the composited path the whole timeout to win.
+  if [ "${SHOOT_ALLOW_OFFSCREEN:-}" = "1" ] && [ -n "$last_pid" ]; then
+    line="$(find_panel "$last_pid" 1)"
+    if [ -n "$line" ]; then
+      PANEL="$line"
+      PANEL_OFFSCREEN=1
+      log "no composited panel after ${READY_TIMEOUT}s; falling back to the uncomposited window"
+      return 0
+    fi
+  fi
+
   log "the panel did not appear within ${READY_TIMEOUT}s"
   return 1
 }
@@ -331,6 +355,11 @@ capture_panel() {
   window_id="${PANEL%%$'\t'*}"
   bounds="${PANEL#*$'\t'}"
   log "panel window id $window_id, bounds ${bounds} (x,y,w,h in points)"
+  if [ "${SHOOT_ALLOW_OFFSCREEN:-}" = "1" ] && [ "$PANEL_OFFSCREEN" = "1" ]; then
+    log "WARNING: this window is NOT composited (SHOOT_ALLOW_OFFSCREEN fallback)."
+    log "         The shot is its backing store, so nothing behind it is drawn:"
+    log "         readable for content, useless for judging translucency."
+  fi
 
   sleep "$SETTLE"
   # -x: no shutter sound. -o: no drop shadow, so the PNG is the panel alone.
@@ -387,8 +416,14 @@ shoot: the overlay panel never appeared for view '$view'.
 
   If the dev log has no "[shoot] presented the overlay panel" line, the
   frontend hook never ran. If it does, the panel was ordered in but the window
-  server did not draw it — that happens while another app holds the foreground.
+  server did not draw it — that happens while another app holds the foreground,
+  and reliably while every display is showing a full-screen app.
   Retrying with the desktop in front usually clears it.
+
+  SHOOT_ALLOW_OFFSCREEN=1 takes the shot anyway, from the window's backing
+  store. Use it to read the panel's own content when the desktop cannot be
+  cleared; do NOT use it to judge translucency, since nothing behind an
+  uncomposited window was ever drawn.
 
   Also re-check System Settings -> Privacy & Security -> Screen Recording:
   without it CGWindowListCopyWindowInfo withholds the on-screen flag and the
