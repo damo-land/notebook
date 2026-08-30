@@ -79,6 +79,7 @@ fn show_overlay(app: &AppHandle) {
     place_overlay_on_cursor_display(app);
     panel.show_and_make_key();
     log_key_window_status(panel.as_ref());
+    log_key_window_status_delayed(app, Duration::from_millis(300));
     emit_overlay_shown(app);
 }
 
@@ -90,10 +91,45 @@ fn show_overlay(app: &AppHandle) {
 /// broken. The end-to-end truth (a keystroke landing in the input with no
 /// prior click) can only be confirmed by a human at the keyboard.
 fn log_key_window_status(panel: &dyn tauri_nspanel::Panel) {
+    let ns = panel.as_panel();
     eprintln!(
-        "[overlay] key-window check after show_and_make_key: isKeyWindow={}",
-        panel.as_panel().isKeyWindow()
+        "[overlay] key-window check after show_and_make_key: isKeyWindow={} styleMask={:#x}",
+        ns.isKeyWindow(),
+        ns.styleMask().0,
     );
+}
+
+/// Asks the same question again shortly after the show settles, and retries
+/// `makeKeyWindow` once if the answer is still no.
+///
+/// Measured behaviour (harness dev logs): on the process's very FIRST show
+/// the immediate check reads false — AppKit finishes granting key status a
+/// beat after `makeKeyWindow` returns for a window that has never been on
+/// screen — and every later show reads true immediately. The retry covers
+/// that first-show window; it is skipped when the panel was hidden again in
+/// the meantime, so it can never steal key status back after a dismissal.
+fn log_key_window_status_delayed(app: &AppHandle, delay: Duration) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(delay);
+        let _ = app.clone().run_on_main_thread(move || {
+            if let Ok(panel) = app.get_webview_panel(OVERLAY_WINDOW_LABEL) {
+                if !panel.is_visible() {
+                    return;
+                }
+                let was_key = panel.as_panel().isKeyWindow();
+                if !was_key {
+                    panel.make_key_window();
+                }
+                eprintln!(
+                    "[overlay] key-window recheck after {}ms: isKeyWindow={}{}",
+                    delay.as_millis(),
+                    panel.as_panel().isKeyWindow(),
+                    if was_key { "" } else { " (retried makeKeyWindow)" },
+                );
+            }
+        });
+    });
 }
 
 /// The display the overlay was last placed on, in points. Written by
@@ -483,6 +519,7 @@ fn shoot_present_overlay(app: &AppHandle, attempt: u32) {
                 place_overlay_on_cursor_display(&handle);
                 panel.show_and_make_key();
                 log_key_window_status(panel.as_ref());
+                log_key_window_status_delayed(&handle, Duration::from_millis(300));
                 // Ordering in is not enough while another app is frontmost;
                 // activating this app is what actually gets it drawn.
                 if let Some(window) = handle.get_webview_window(OVERLAY_WINDOW_LABEL) {
