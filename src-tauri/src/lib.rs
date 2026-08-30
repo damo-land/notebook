@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -277,6 +277,25 @@ fn open_tasks_view(app: &AppHandle) {
 #[tauri::command]
 fn hide_overlay(app: AppHandle) {
     hide_overlay_panel(&app);
+}
+
+/// True while the frontend is in the chat view or has a chat turn in flight.
+///
+/// Read by the click-outside/resign-key hide in `setup`, and only there: users
+/// reported the chat view closing the moment an answer arrived, because
+/// something momentarily takes key status off the panel and the resign-key
+/// path treats that as a click outside. The focus steal itself is unconfirmed,
+/// so this is the defensive half — while chat is on screen or an answer is
+/// being written, losing key does not hide the overlay. Esc and Ctrl+W go
+/// through [`hide_overlay`] and are unaffected.
+#[derive(Default)]
+struct ChatActive(AtomicBool);
+
+/// Set (or clear) [`ChatActive`]. The frontend calls this whenever the chat
+/// view is entered/left or a turn starts/finishes streaming.
+#[tauri::command]
+fn set_chat_active(app: AppHandle, active: bool) {
+    app.state::<ChatActive>().0.store(active, Ordering::Relaxed);
 }
 
 // --- Overlay height ----------------------------------------------------------
@@ -1169,8 +1188,10 @@ pub fn run() {
         )
         .manage(SidecarState::default())
         .manage(ChosenDisplay::default())
+        .manage(ChatActive::default())
         .invoke_handler(tauri::generate_handler![
             hide_overlay,
+            set_chat_active,
             resize_overlay,
             search_notes,
             list_notes,
@@ -1336,12 +1357,28 @@ pub fn run() {
             // leaving it armed makes the harness untestable rather than making
             // it honest. `shoot_view_env` is already debug-build-only, so a
             // release build cannot reach this branch at all.
+            //
+            // Also suppressed while [`ChatActive`] is set — chat view on
+            // screen, or a chat turn still in flight. Something takes key
+            // status off the panel around the moment an answer lands (root
+            // cause unconfirmed), and hiding here threw users out of the chat
+            // they were reading. Every explicit dismissal (Esc, Ctrl+W, the
+            // alt+space toggle) bypasses this handler entirely, so they all
+            // still hide.
             let dismiss_handle = app.handle().clone();
             let shooting = shoot_view_env().is_some();
             window.on_window_event(move |event| {
                 if let tauri::WindowEvent::Focused(false) = event {
                     if shooting {
                         eprintln!("[notebook] overlay resigned key (screenshot hook: not hiding)");
+                        return;
+                    }
+                    if dismiss_handle
+                        .state::<ChatActive>()
+                        .0
+                        .load(Ordering::Relaxed)
+                    {
+                        eprintln!("[notebook] overlay resigned key (chat active: not hiding)");
                         return;
                     }
                     eprintln!("[notebook] overlay resigned key: hiding");
