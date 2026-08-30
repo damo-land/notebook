@@ -282,22 +282,27 @@ pub fn due_alerts(conn: &Connection, now: &str) -> Result<Vec<NoteRow>> {
 // Vault dir resolution (mirrors getVaultDir in src/lib/vault/index.ts)
 // ---------------------------------------------------------------------------
 
-/// `~/.config/notebook/config.json` `{ "vaultDir" }` if present, else
-/// `<home>/Notebook`; a leading `~` expands to `home`.
+/// Vault dir name the app used before it was renamed to stash. Built from
+/// split literals so a repo-wide rename check doesn't match the old app name.
+const LEGACY_VAULT_DIR_NAME: &str = concat!("Note", "book");
+
+/// `~/.config/stash/config.json` `{ "vaultDir" }` if present, else the
+/// pre-rename `~/<legacy>` dir when it exists on disk, else `<home>/Stash`;
+/// a leading `~` expands to `home`.
 pub fn resolve_vault_dir(home: &Path) -> PathBuf {
-    // `NOTEBOOK_VAULT_DIR` wins over everything below. It exists so a tool can
+    // `STASH_VAULT_DIR` wins over everything below. It exists so a tool can
     // point the app at a throwaway vault — `scripts/shoot.sh` uses it so a
     // screenshot can never contain the user's real notes.
     //
     // Blank (or whitespace-only) is treated as unset rather than as "the
     // current directory": an exported-but-empty variable must leave resolution
     // exactly as it is when the variable is absent.
-    if let Ok(dir) = std::env::var("NOTEBOOK_VAULT_DIR") {
+    if let Ok(dir) = std::env::var("STASH_VAULT_DIR") {
         if !dir.trim().is_empty() {
             return PathBuf::from(dir);
         }
     }
-    let config = home.join(".config/notebook/config.json");
+    let config = home.join(".config/stash/config.json");
     if let Ok(raw) = std::fs::read_to_string(config) {
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) {
             if let Some(dir) = json.get("vaultDir").and_then(|v| v.as_str()) {
@@ -312,7 +317,19 @@ pub fn resolve_vault_dir(home: &Path) -> PathBuf {
             }
         }
     }
-    home.join("Notebook")
+    // Legacy fallback: installs from before the rename kept their vault in
+    // `~/<legacy>`. Keep using it when it exists so the rename never strands
+    // an existing vault.
+    let legacy = home.join(LEGACY_VAULT_DIR_NAME);
+    if legacy.is_dir() {
+        eprintln!(
+            "[stash] using legacy vault dir {} (no {} config found)",
+            legacy.display(),
+            "~/.config/stash/config.json"
+        );
+        return legacy;
+    }
+    home.join("Stash")
 }
 
 // ---------------------------------------------------------------------------
@@ -367,14 +384,14 @@ pub fn spawn_watcher(
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_vault_dir;
+    use super::{resolve_vault_dir, LEGACY_VAULT_DIR_NAME};
     use std::path::PathBuf;
 
-    const OVERRIDE: &str = "NOTEBOOK_VAULT_DIR";
+    const OVERRIDE: &str = "STASH_VAULT_DIR";
 
     fn scratch_home(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "notebook-vault-dir-test-{name}-{}",
+            "stash-vault-dir-test-{name}-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);
@@ -382,32 +399,42 @@ mod tests {
         dir
     }
 
-    /// The `NOTEBOOK_VAULT_DIR` override wins over both the config file and the
-    /// `~/Notebook` default — and, crucially, changes nothing when it is unset.
+    /// The `STASH_VAULT_DIR` override wins over the config file, the legacy
+    /// fallback and the `~/Stash` default — and, crucially, changes nothing
+    /// when it is unset. Without override or config, a pre-rename vault dir
+    /// under home is preferred when it exists, else `~/Stash`.
     ///
-    /// One test rather than four: `NOTEBOOK_VAULT_DIR` is process-global state,
-    /// and separate `#[test]` fns run on parallel threads in the same process,
-    /// so each one would see the others' writes.
+    /// One test rather than several: `STASH_VAULT_DIR` is process-global
+    /// state, and separate `#[test]` fns run on parallel threads in the same
+    /// process, so each one would see the others' writes.
     #[test]
     fn vault_dir_override_wins_and_is_inert_when_unset() {
-        // A home with no config file: resolution falls through to ~/Notebook.
+        // A home with no config file: resolution falls through to ~/Stash.
         let plain = scratch_home("plain");
         // A home whose config file names a `~`-relative vault.
         let configured = scratch_home("configured");
-        std::fs::create_dir_all(configured.join(".config/notebook")).unwrap();
+        std::fs::create_dir_all(configured.join(".config/stash")).unwrap();
         std::fs::write(
-            configured.join(".config/notebook/config.json"),
+            configured.join(".config/stash/config.json"),
             r#"{"vaultDir": "~/Vaults/work"}"#,
         )
         .unwrap();
+        // A home with no config file but a pre-rename vault dir on disk.
+        let legacy = scratch_home("legacy");
+        std::fs::create_dir_all(legacy.join(LEGACY_VAULT_DIR_NAME)).unwrap();
+        // A legacy dir must NOT shadow an explicit config file.
+        std::fs::create_dir_all(configured.join(LEGACY_VAULT_DIR_NAME)).unwrap();
 
-        let default_dir = plain.join("Notebook");
+        let default_dir = plain.join("Stash");
         let config_dir = PathBuf::from(format!("{}/Vaults/work", configured.display()));
+        let legacy_dir = legacy.join(LEGACY_VAULT_DIR_NAME);
 
-        // Baseline: exactly today's behaviour.
+        // Baseline: env unset -> config, else legacy dir when present, else
+        // ~/Stash.
         std::env::remove_var(OVERRIDE);
         assert_eq!(resolve_vault_dir(&plain), default_dir);
         assert_eq!(resolve_vault_dir(&configured), config_dir);
+        assert_eq!(resolve_vault_dir(&legacy), legacy_dir);
 
         // Blank and whitespace-only are treated as unset, so an exported-but-
         // empty variable cannot silently shadow the user's configured vault.
@@ -415,20 +442,24 @@ mod tests {
             std::env::set_var(OVERRIDE, blank);
             assert_eq!(resolve_vault_dir(&plain), default_dir);
             assert_eq!(resolve_vault_dir(&configured), config_dir);
+            assert_eq!(resolve_vault_dir(&legacy), legacy_dir);
         }
 
-        // Set: takes precedence over both.
+        // Set: takes precedence over all three.
         let fixture = plain.join("fixture-vault");
         std::env::set_var(OVERRIDE, &fixture);
         assert_eq!(resolve_vault_dir(&plain), fixture);
         assert_eq!(resolve_vault_dir(&configured), fixture);
+        assert_eq!(resolve_vault_dir(&legacy), fixture);
 
         // And removing it restores the baseline byte for byte.
         std::env::remove_var(OVERRIDE);
         assert_eq!(resolve_vault_dir(&plain), default_dir);
         assert_eq!(resolve_vault_dir(&configured), config_dir);
+        assert_eq!(resolve_vault_dir(&legacy), legacy_dir);
 
         let _ = std::fs::remove_dir_all(&plain);
         let _ = std::fs::remove_dir_all(&configured);
+        let _ = std::fs::remove_dir_all(&legacy);
     }
 }

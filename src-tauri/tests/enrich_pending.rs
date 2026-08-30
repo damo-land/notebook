@@ -8,14 +8,14 @@
 //!
 //! Run with: cargo test --test enrich_pending -- --nocapture
 
-use notebook_lib::enrich::{pending_jobs, MAX_CANDIDATES};
-use notebook_lib::index::{open_db, reindex};
+use stash_lib::enrich::{pending_jobs, MAX_CANDIDATES};
+use stash_lib::index::{open_db, reindex};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 fn scratch_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
-        "notebook-enrich-test-{name}-{}",
+        "stash-enrich-test-{name}-{}",
         std::process::id()
     ));
     let _ = fs::remove_dir_all(&dir);
@@ -79,7 +79,7 @@ fn selects_only_unenriched_knowledge_notes() {
         .iter()
         .find(|j| j.id == "20260827-100000-sqlite-index");
     assert!(enriched.is_none(), "enriched note must not be re-dispatched");
-    let hits = notebook_lib::index::search_notes(&conn, "Derived cache").unwrap();
+    let hits = stash_lib::index::search_notes(&conn, "Derived cache").unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].id, "20260827-100000-sqlite-index");
     assert_eq!(hits[0].tags, vec!["index", "sqlite"]);

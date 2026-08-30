@@ -10,8 +10,8 @@
 //!
 //! Run with: cargo test --test alert_scheduler -- --nocapture
 
-use notebook_lib::alerts::{is_alerted, iso_utc, now_iso_utc, take_due_alerts};
-use notebook_lib::index::{note_count, open_db, reindex};
+use stash_lib::alerts::{is_alerted, iso_utc, now_iso_utc, take_due_alerts};
+use stash_lib::index::{note_count, open_db, reindex};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -26,7 +26,7 @@ const NOTE_D: &str = "20260828-080000-finished.md";
 
 fn scratch_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
-        "notebook-alerts-test-{name}-{}",
+        "stash-alerts-test-{name}-{}",
         std::process::id()
     ));
     let _ = fs::remove_dir_all(&dir);

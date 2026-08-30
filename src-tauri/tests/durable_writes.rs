@@ -16,8 +16,8 @@
 //!
 //! Run with: cargo test --test durable_writes -- --nocapture
 
-use notebook_lib::alerts::{is_alerted, mark_alerted, mark_alerted_with};
-use notebook_lib::{atomic_write, for_each_readable_line, temp_path_for, WriteError};
+use stash_lib::alerts::{is_alerted, mark_alerted, mark_alerted_with};
+use stash_lib::{atomic_write, for_each_readable_line, temp_path_for, WriteError};
 
 use std::fs;
 use std::io::Cursor;
@@ -27,7 +27,7 @@ use std::sync::Arc;
 
 fn scratch_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
-        "notebook-durable-test-{name}-{}",
+        "stash-durable-test-{name}-{}",
         std::process::id()
     ));
     let _ = fs::remove_dir_all(&dir);
@@ -268,7 +268,7 @@ fn an_unreadable_line_does_not_stop_the_reader_loop() {
 
 #[test]
 fn overlay_height_is_clamped_to_the_documented_bounds() {
-    use notebook_lib::{clamp_overlay_height, OVERLAY_MAX_HEIGHT_FRACTION, OVERLAY_MIN_HEIGHT};
+    use stash_lib::{clamp_overlay_height, OVERLAY_MAX_HEIGHT_FRACTION, OVERLAY_MIN_HEIGHT};
 
     // 60% of a 900pt-tall screen.
     let max = 900.0 * OVERLAY_MAX_HEIGHT_FRACTION;

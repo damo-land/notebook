@@ -4,13 +4,13 @@
 //!
 //! Run with: cargo test --test index_rebuild -- --nocapture
 
-use notebook_lib::index::{due_alerts, list_tasks, note_count, open_db, reindex, search_notes};
+use stash_lib::index::{due_alerts, list_tasks, note_count, open_db, reindex, search_notes};
 use std::fs;
 use std::path::PathBuf;
 
 fn scratch_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
-        "notebook-index-test-{name}-{}",
+        "stash-index-test-{name}-{}",
         std::process::id()
     ));
     let _ = fs::remove_dir_all(&dir);

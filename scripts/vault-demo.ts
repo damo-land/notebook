@@ -25,15 +25,15 @@ const fs: VaultFs = {
 };
 
 async function main() {
-  const vaultDir = await nodeFs.mkdtemp(path.join(os.tmpdir(), "notebook-vault-"));
+  const vaultDir = await nodeFs.mkdtemp(path.join(os.tmpdir(), "stash-vault-"));
   console.log("vault dir:", vaultDir);
 
   // config resolution (against a fake home with no config -> default)
-  const fakeHome = await nodeFs.mkdtemp(path.join(os.tmpdir(), "notebook-home-"));
-  assert.strictEqual(await getVaultDir(fs, fakeHome), `${fakeHome}/Notebook`);
-  await nodeFs.mkdir(`${fakeHome}/.config/notebook`, { recursive: true });
+  const fakeHome = await nodeFs.mkdtemp(path.join(os.tmpdir(), "stash-home-"));
+  assert.strictEqual(await getVaultDir(fs, fakeHome), `${fakeHome}/Stash`);
+  await nodeFs.mkdir(`${fakeHome}/.config/stash`, { recursive: true });
   await nodeFs.writeFile(
-    `${fakeHome}/.config/notebook/config.json`,
+    `${fakeHome}/.config/stash/config.json`,
     JSON.stringify({ vaultDir: "~/CustomVault" })
   );
   assert.strictEqual(await getVaultDir(fs, fakeHome), `${fakeHome}/CustomVault`);

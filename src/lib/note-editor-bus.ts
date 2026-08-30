@@ -2,7 +2,7 @@
 // App subscribes once via `onOpenNote` and shows the editor. A plain
 // window CustomEvent keeps it dependency-free and decoupled from React.
 
-const EVENT = "notebook:open-note";
+const EVENT = "stash:open-note";
 
 /** Ask the overlay to open the note with this id (or vault-relative path). */
 export function openNote(id: string): void {

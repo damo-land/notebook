@@ -267,7 +267,7 @@ function App() {
 
   // Dev-only screenshot hook (scripts/shoot.sh). `shoot_view` returns null in
   // a release build and in every normal dev run, so this effect is a single
-  // no-op invoke unless the harness set NOTEBOOK_SHOOT_VIEW. When it did:
+  // no-op invoke unless the harness set STASH_SHOOT_VIEW. When it did:
   // switch to the requested view and only then ask Rust to show the panel.
   // Showing last is what makes "the panel is on screen" a reliable readiness
   // signal for the harness.

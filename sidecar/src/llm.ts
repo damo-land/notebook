@@ -12,7 +12,7 @@ export class NotAuthenticatedError extends Error {
 }
 
 export interface RunPromptOptions {
-  /** Model override; defaults to NOTEBOOK_MODEL env var, else the SDK default. */
+  /** Model override; defaults to STASH_MODEL env var, else the SDK default. */
   model?: string;
   /**
    * Built-in tools to make available, e.g. `["WebFetch"]`. Default `[]` — a
@@ -140,7 +140,7 @@ export async function runPrompt(
 ): Promise<string> {
   stripApiKey();
 
-  const model = opts.model ?? process.env["NOTEBOOK_MODEL"] ?? undefined;
+  const model = opts.model ?? process.env["STASH_MODEL"] ?? undefined;
 
   try {
     for await (const message of query({

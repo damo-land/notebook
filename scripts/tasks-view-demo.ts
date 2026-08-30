@@ -46,7 +46,7 @@ function row(over: Partial<IndexedNote> & { id: string }): IndexedNote {
 
 async function main() {
   // --- done toggle on disk (the Space handler's code path) -------------------
-  const vaultDir = await nodeFs.mkdtemp(path.join(os.tmpdir(), "notebook-tasks-"));
+  const vaultDir = await nodeFs.mkdtemp(path.join(os.tmpdir(), "stash-tasks-"));
   console.log("vault dir:", vaultDir);
 
   // A task with an explicit done: false…

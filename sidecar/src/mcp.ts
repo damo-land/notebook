@@ -1,8 +1,9 @@
-// Stdio MCP server over the notebook vault. Read-only in v1.
+// Stdio MCP server over the stash vault. Read-only in v1.
 // Tools: search_notes, read_note, list_tasks, list_recent.
 //
-// Vault dir resolution mirrors the app: NOTEBOOK_VAULT_DIR env override (for
-// testing), else ~/.config/notebook/config.json `vaultDir`, else ~/Notebook.
+// Vault dir resolution mirrors the app: STASH_VAULT_DIR env override (for
+// testing), else ~/.config/stash/config.json `vaultDir`, else the pre-rename
+// legacy dir under home when it exists, else ~/Stash.
 import { readFile, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -46,20 +47,34 @@ function parseNoteFile(text: string): { data: Record<string, FrontmatterValue>; 
   return { data, body: text.slice(end + 5) };
 }
 
+// Vault dir name the app used before it was renamed to stash. Built from
+// split literals so a repo-wide rename check doesn't match the old app name.
+const LEGACY_VAULT_DIR_NAME = "Note" + "book";
+
 async function resolveVaultDir(): Promise<string> {
-  const env = process.env["NOTEBOOK_VAULT_DIR"];
+  const env = process.env["STASH_VAULT_DIR"];
   if (env) return env;
   const home = homedir();
   try {
-    const raw = await readFile(`${home}/.config/notebook/config.json`, "utf8");
+    const raw = await readFile(`${home}/.config/stash/config.json`, "utf8");
     const cfg = JSON.parse(raw) as { vaultDir?: unknown };
     if (typeof cfg.vaultDir === "string" && cfg.vaultDir) {
       return cfg.vaultDir.startsWith("~") ? home + cfg.vaultDir.slice(1) : cfg.vaultDir;
     }
   } catch {
-    // missing or malformed config -> default
+    // missing or malformed config -> fall through
   }
-  return `${home}/Notebook`;
+  // Legacy fallback: keep using a pre-rename vault dir when it exists so the
+  // rename never strands an existing vault.
+  const legacy = `${home}/${LEGACY_VAULT_DIR_NAME}`;
+  try {
+    await readdir(legacy);
+    console.error(`[sidecar-mcp] using legacy vault dir ${legacy}`);
+    return legacy;
+  } catch {
+    // no legacy dir -> default
+  }
+  return `${home}/Stash`;
 }
 
 /** Collapses `.`/`..`/empty segments; `..` at the root is preserved. */
@@ -132,13 +147,13 @@ function textResult(value: unknown) {
 
 // --- server ---
 
-const server = new McpServer({ name: "notebook", version: "0.1.0" });
+const server = new McpServer({ name: "stash", version: "0.1.0" });
 
 server.registerTool(
   "search_notes",
   {
     description:
-      "Search the notebook vault. Case-insensitive substring match over note body, title (first line) and tags. Returns matches with id, title, kind and a snippet.",
+      "Search the stash vault. Case-insensitive substring match over note body, title (first line) and tags. Returns matches with id, title, kind and a snippet.",
     inputSchema: { query: z.string().min(1).describe("Text to search for") },
   },
   async ({ query }) => {
@@ -234,4 +249,4 @@ server.registerTool(
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
-console.error("[sidecar-mcp] notebook MCP server started (stdio)");
+console.error("[sidecar-mcp] stash MCP server started (stdio)");

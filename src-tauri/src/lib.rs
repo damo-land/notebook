@@ -414,7 +414,7 @@ fn resize_overlay(app: AppHandle, height: f64) -> Result<f64, String> {
 // The overlay is only reachable through a global hotkey, and synthesising one
 // from a script needs macOS Accessibility permission that an unattended run
 // cannot grant. So `scripts/shoot.sh` launches a debug build with
-// `NOTEBOOK_SHOOT_VIEW=<capture|tasks|search|chat|editor>` instead: the
+// `STASH_SHOOT_VIEW=<capture|tasks|search|chat|editor>` instead: the
 // frontend asks for the value on mount (`shoot_view`), switches to that view,
 // and only once it has painted asks for the panel (`shoot_show_overlay`).
 // Showing last is what lets the harness treat "the panel is on screen" as a
@@ -428,7 +428,7 @@ fn shoot_view_env() -> Option<String> {
     if !cfg!(debug_assertions) {
         return None;
     }
-    std::env::var("NOTEBOOK_SHOOT_VIEW")
+    std::env::var("STASH_SHOOT_VIEW")
         .ok()
         .filter(|v| !v.trim().is_empty())
 }
@@ -443,7 +443,7 @@ fn shoot_view() -> Option<String> {
 }
 
 /// Content controls for a capture, so a screenshot can show something other
-/// than an empty overlay. Both are inert without `NOTEBOOK_SHOOT_VIEW`.
+/// than an empty overlay. Both are inert without `STASH_SHOOT_VIEW`.
 #[derive(serde::Serialize)]
 struct ShootInput {
     /// Text put into the capture input at mount — the overlay has to hold
@@ -470,8 +470,8 @@ fn shoot_env_text(key: &str) -> Option<String> {
 #[tauri::command]
 fn shoot_input() -> ShootInput {
     let input = ShootInput {
-        seed: shoot_env_text("NOTEBOOK_SHOOT_TEXT"),
-        typed: shoot_env_text("NOTEBOOK_SHOOT_TYPE"),
+        seed: shoot_env_text("STASH_SHOOT_TEXT"),
+        typed: shoot_env_text("STASH_SHOOT_TYPE"),
     };
     if let Some(seed) = &input.seed {
         eprintln!("[shoot] seeding the capture input with {} chars", seed.len());
@@ -590,7 +590,7 @@ fn spawn_alert_scheduler(app: AppHandle, conn: Arc<Mutex<rusqlite::Connection>>)
             if let Err(e) = app
                 .notification()
                 .builder()
-                .title("Notebook reminder")
+                .title("Stash reminder")
                 .body(body)
                 .show()
             {
@@ -699,7 +699,7 @@ pub fn temp_path_for(path: &Path) -> PathBuf {
         .unwrap_or(0);
     let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
     path.with_file_name(format!(
-        ".notebook-{}-{nanos}-{seq}.tmp",
+        ".stash-{}-{nanos}-{seq}.tmp",
         std::process::id()
     ))
 }
@@ -902,7 +902,7 @@ fn spawn_sidecar_reader(app: AppHandle, sidecar: Arc<Sidecar>, stdout: ChildStdo
             if is_chunk {
                 if let Some(value) = parsed {
                     if let Err(e) = app.emit("chat-chunk", value) {
-                        eprintln!("[notebook] emit chat-chunk failed: {e}");
+                        eprintln!("[stash] emit chat-chunk failed: {e}");
                     }
                 }
                 return;
@@ -914,7 +914,7 @@ fn spawn_sidecar_reader(app: AppHandle, sidecar: Arc<Sidecar>, stdout: ChildStdo
                 Some(tx) => {
                     let _ = tx.send(line);
                 }
-                None => eprintln!("[notebook] unmatched sidecar response: {line}"),
+                None => eprintln!("[stash] unmatched sidecar response: {line}"),
             }
         });
     });
@@ -933,7 +933,7 @@ pub fn for_each_readable_line<R: BufRead>(reader: R, mut on_line: impl FnMut(Str
     for line in reader.lines() {
         match line {
             Ok(line) => on_line(line),
-            Err(e) => eprintln!("[notebook] skipped unreadable sidecar line: {e}"),
+            Err(e) => eprintln!("[stash] skipped unreadable sidecar line: {e}"),
         }
     }
 }
@@ -1193,7 +1193,7 @@ pub fn run() {
                         next_id: 0,
                     });
                 }
-                Err(e) => eprintln!("[notebook] sidecar failed to start: {e}"),
+                Err(e) => eprintln!("[stash] sidecar failed to start: {e}"),
             }
 
             // SQLite index: db in app data dir (outside the vault), initial
@@ -1244,9 +1244,9 @@ pub fn run() {
             // Resident tray app: no dock icon.
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-            let quit = MenuItem::with_id(app, "quit", "Quit notebook", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Quit stash", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&quit])?;
-            TrayIconBuilder::with_id("notebook-tray")
+            TrayIconBuilder::with_id("stash-tray")
                 .icon(app.default_window_icon().expect("default window icon").clone())
                 .menu(&menu)
                 .on_menu_event(|app, event| {
@@ -1288,7 +1288,7 @@ pub fn run() {
                 Some(window_vibrancy::NSVisualEffectState::Active),
                 Some(12.0),
             ) {
-                eprintln!("[notebook] vibrancy (HudWindow) not applied: {e}");
+                eprintln!("[stash] vibrancy (HudWindow) not applied: {e}");
             }
 
             // Convert the main window into a floating NSPanel.
@@ -1332,10 +1332,10 @@ pub fn run() {
             window.on_window_event(move |event| {
                 if let tauri::WindowEvent::Focused(false) = event {
                     if shooting {
-                        eprintln!("[notebook] overlay resigned key (screenshot hook: not hiding)");
+                        eprintln!("[stash] overlay resigned key (screenshot hook: not hiding)");
                         return;
                     }
-                    eprintln!("[notebook] overlay resigned key: hiding");
+                    eprintln!("[stash] overlay resigned key: hiding");
                     hide_overlay_panel(&dismiss_handle);
                 }
             });

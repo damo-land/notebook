@@ -19,7 +19,7 @@
 // final render end to end.
 
 export interface ChatTurn {
-  role: "you" | "notebook";
+  role: "you" | "stash";
   text: string;
   /** True while this answer is still streaming in. */
   streaming?: boolean;

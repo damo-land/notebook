@@ -1,7 +1,7 @@
-// Proof script for the notebook MCP server (T13).
+// Proof script for the stash MCP server (T13).
 //
 // Creates a temp vault with a few notes, spawns src/mcp.ts as a stdio MCP
-// server (NOTEBOOK_VAULT_DIR pointing at the temp vault), performs the MCP
+// server (STASH_VAULT_DIR pointing at the temp vault), performs the MCP
 // handshake via the SDK client, calls search_notes / read_note / list_tasks /
 // list_recent, and asserts that matching note content comes back. Exits 0 on
 // success, 1 on any failed assertion.
@@ -31,7 +31,7 @@ function firstText(result: unknown): string {
   return text;
 }
 
-const vaultDir = await mkdtemp(join(tmpdir(), "notebook-mcp-demo-"));
+const vaultDir = await mkdtemp(join(tmpdir(), "stash-mcp-demo-"));
 
 await writeFile(
   join(vaultDir, "20260801-101500-groceries.md"),
@@ -79,7 +79,7 @@ const transport = new StdioClientTransport({
   command: process.execPath, // node
   args: ["--import", "tsx", "src/mcp.ts"],
   cwd: sidecarDir,
-  env: { ...process.env, NOTEBOOK_VAULT_DIR: vaultDir } as Record<string, string>,
+  env: { ...process.env, STASH_VAULT_DIR: vaultDir } as Record<string, string>,
   stderr: "inherit",
 });
 const client = new Client({ name: "mcp-demo", version: "0.1.0" });
