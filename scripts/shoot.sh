@@ -49,6 +49,8 @@ VITE_PORT=1420
 READY_TIMEOUT="${SHOOT_READY_TIMEOUT:-180}"
 # Paint + panel fade after the window is on screen.
 SETTLE="${SHOOT_SETTLE:-1.2}"
+# Whole-launch retries per view when the panel never shows (see shoot_view).
+LAUNCH_ATTEMPTS="${SHOOT_LAUNCH_ATTEMPTS:-3}"
 
 # `tauri dev` shells out to cargo, which rustup installs outside the default
 # PATH — pick it up so the harness runs from a plain shell.
@@ -127,7 +129,12 @@ stop_app() {
   fi
 }
 
-trap stop_app EXIT INT TERM
+# INT/TERM exit explicitly. A bash signal handler that merely returns lets the
+# script *resume* — and the `for view` loop would then launch a fresh app for
+# the next view after the user pressed Ctrl-C, which is the exact leak this
+# harness exists to prevent. EXIT stays separate so it still runs on the way out.
+trap stop_app EXIT
+trap 'stop_app; exit 130' INT TERM
 
 # --- preflight ---------------------------------------------------------------
 
@@ -165,9 +172,18 @@ mkdir -p "$OUT_DIR"
 
 # --- one view ----------------------------------------------------------------
 
-# Prints "<windowId> <x>,<y>,<w>,<h>" for the app's panel once it is on screen.
+# Sets PANEL to "<windowId>\t<x>,<y>,<w>,<h>" once the app's panel is on screen.
+#
+# A global rather than a return value on stdout, deliberately: read through
+# `$(...)` this would run in a subshell, and bash defers a signal trap until the
+# foreground command finishes — so Ctrl-C during the wait would be swallowed
+# until the whole poll loop had timed out, and the interrupt would report itself
+# as a timeout.
+PANEL=""
+
 wait_for_panel() {
   local pgid="$1" log_file="$2" deadline=$((SECONDS + READY_TIMEOUT)) app_pid line
+  PANEL=""
   while [ "$SECONDS" -lt "$deadline" ]; do
     if [ -z "$(group_pids "$pgid")" ]; then
       echo "shoot: the app exited before the panel appeared; see $log_file" >&2
@@ -183,32 +199,18 @@ wait_for_panel() {
       line="$(swift "$REPO_ROOT/scripts/shoot-window.swift" "$app_pid" 2>/dev/null || true)"
       line="${line%%$'\n'*}"
       if [ -n "$line" ]; then
-        printf '%s\n' "$line"
+        PANEL="$line"
         return 0
       fi
     fi
     sleep 1
   done
-  cat >&2 <<EOF
-shoot: the overlay panel never appeared on screen within ${READY_TIMEOUT}s.
-
-  The app started and the dev log should show "[shoot] showing the overlay
-  panel" — the panel was ordered in but the window server never composited it.
-  Check by hand whether alt+space shows the overlay at all: if it does not,
-  the problem is the app, not this harness.
-
-  Dev log: $log_file
-EOF
+  log "the panel did not appear within ${READY_TIMEOUT}s"
   return 1
 }
 
-shoot_view() {
-  local view="$1"
-  local png="$OUT_DIR/$view.png"
-  local log_file="$OUT_DIR/$view.dev.log"
-
-  log "launching app for view '$view' (log: $log_file)"
-  rm -f "$png"
+launch_app() {
+  local view="$1" log_file="$2"
   set -m # job control: the launch below gets its own process group
   # stdin from /dev/null: a background process group that reads the terminal
   # gets SIGTTIN and stops dead.
@@ -218,11 +220,12 @@ shoot_view() {
   ) </dev/null >"$log_file" 2>&1 &
   APP_PGID=$!
   set +m
+}
 
-  local found window_id bounds
-  found="$(wait_for_panel "$APP_PGID" "$log_file")"
-  window_id="${found%%$'\t'*}"
-  bounds="${found#*$'\t'}"
+capture_panel() {
+  local view="$1" png="$2" window_id bounds
+  window_id="${PANEL%%$'\t'*}"
+  bounds="${PANEL#*$'\t'}"
   log "panel window id $window_id, bounds ${bounds} (x,y,w,h in points)"
 
   sleep "$SETTLE"
@@ -248,9 +251,48 @@ shoot_view() {
     return 1
   fi
 
-  stop_app
   log "wrote $png"
   log "     ${px}x${py} px  (${bw}x${bh} pt, ${scale}x scale)"
+}
+
+# One view: launch, wait, capture, tear down — retrying the whole launch if the
+# panel never showed. That retry is not paranoia: while the user is working in
+# another app, macOS sometimes leaves a backgrounded app's panel undrawn no
+# matter how often the app re-presents it, and a fresh launch clears it. Every
+# attempt tears its app down before the next one starts.
+shoot_view() {
+  local view="$1"
+  local png="$OUT_DIR/$view.png"
+  local log_file="$OUT_DIR/$view.dev.log"
+  local attempt
+
+  rm -f "$png"
+  for attempt in $(seq 1 "$LAUNCH_ATTEMPTS"); do
+    log "launching app for view '$view' (attempt $attempt/$LAUNCH_ATTEMPTS, log: $log_file)"
+    launch_app "$view" "$log_file"
+    if wait_for_panel "$APP_PGID" "$log_file"; then
+      capture_panel "$view" "$png"
+      stop_app
+      return 0
+    fi
+    stop_app
+  done
+
+  cat >&2 <<EOF
+shoot: the overlay panel never appeared for view '$view'.
+
+  If the dev log has no "[shoot] presented the overlay panel" line, the
+  frontend hook never ran. If it does, the panel was ordered in but the window
+  server did not draw it — that happens while another app holds the foreground.
+  Retrying with the desktop in front usually clears it.
+
+  Also re-check System Settings -> Privacy & Security -> Screen Recording:
+  without it CGWindowListCopyWindowInfo withholds the on-screen flag and the
+  panel is invisible to this lookup even when it is on screen.
+
+  Dev log: $log_file
+EOF
+  return 1
 }
 
 for view in "${VIEWS[@]}"; do
