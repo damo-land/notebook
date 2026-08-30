@@ -614,6 +614,14 @@ fn search_notes(state: State<IndexState>, text: String) -> Result<Vec<index::Not
     index::search_notes(&conn, &text).map_err(|e| e.to_string())
 }
 
+/// The search view's empty-query listing (T5): every note, newest file mtime
+/// first, straight from the SQLite index.
+#[tauri::command]
+fn list_notes(state: State<IndexState>) -> Result<Vec<index::NoteRow>, String> {
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    index::list_all_notes(&conn).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn list_tasks(
     state: State<IndexState>,
@@ -1165,6 +1173,7 @@ pub fn run() {
             hide_overlay,
             resize_overlay,
             search_notes,
+            list_notes,
             list_tasks,
             due_alerts,
             reindex,
