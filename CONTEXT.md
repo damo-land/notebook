@@ -27,6 +27,11 @@ Spotlight-style personal note capture + knowledge vault. Resident overlay
   morph UI (knowledge / task / search / chat)
 - enrichment: background Agent SDK pass on knowledge notes — appends only
   (metadata, link expansion, auto-tags, wiki-links), never rewrites user text
+- marker frontmatter keys — idempotence contracts; never clobber, never write
+  from a stale read: `alerted: true` (alert already fired; dropping it causes a
+  duplicate notification) and `enriched: <ts>` (enrichment done; dropping it
+  causes re-enrichment and re-spend). Both are written read-modify-write with no
+  coordination — see the known race in docs/reports/notebook-v1-t12-check.md
 - holo: ~/Desktop/damo/code/holo — old assistant project; spirit reference for
   chat persona (casual, memory-woven), not code to reuse
 
