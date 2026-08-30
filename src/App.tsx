@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import {
   createNote,
   getVaultDir,
+  listNotes,
   readNote,
   updateNote,
   type Note,
@@ -182,6 +183,35 @@ function App() {
         }
       })();
     });
+  }, []);
+
+  // Dev-only screenshot hook (scripts/shoot.sh). `shoot_view` returns null in
+  // a release build and in every normal dev run, so this effect is a single
+  // no-op invoke unless the harness set NOTEBOOK_SHOOT_VIEW. When it did:
+  // switch to the requested view and only then ask Rust to show the panel.
+  // Showing last is what makes "the panel is on screen" a reliable readiness
+  // signal for the harness.
+  useEffect(() => {
+    void (async () => {
+      const target = await invoke<string | null>("shoot_view");
+      if (!target) return;
+      if (target === "tasks" || target === "search" || target === "chat") {
+        setView(target);
+      } else if (target === "editor") {
+        // The editor only exists for a note that exists: open the first one in
+        // the vault. An empty vault is a hard error — the harness then times
+        // out waiting for the panel and prints this line from the dev log.
+        const vaultDir = vaultDirRef.current ?? (await getVaultDir(tauriVaultFs, await homeDir()));
+        vaultDirRef.current = vaultDir;
+        const first = (await listNotes(tauriVaultFs, vaultDir))[0];
+        if (!first) throw new Error("no note in the vault to open in the editor");
+        setEditing(await readNote(tauriVaultFs, vaultDir, first.id));
+      }
+      // A timer, not requestAnimationFrame: the panel is still hidden here and
+      // a webview in an off-screen window never runs animation frames, so the
+      // rAF callback would never fire and the panel would never appear.
+      setTimeout(() => void invoke("shoot_show_overlay"), 100);
+    })().catch((err) => console.error("shoot hook failed:", err));
   }, []);
 
   /** Persist the edited body via updateNote, then back to capture. The

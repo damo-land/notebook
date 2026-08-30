@@ -28,3 +28,6 @@ scripts/scratch/
 *.njsproj
 *.sln
 *.sw?
+
+# Screenshot harness output (scripts/shoot.sh)
+screenshots/

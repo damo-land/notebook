@@ -68,6 +68,62 @@ fn hide_overlay(app: AppHandle) {
     }
 }
 
+// --- Dev-only screenshot hook (scripts/shoot.sh) -----------------------------
+//
+// The overlay is only reachable through a global hotkey, and synthesising one
+// from a script needs macOS Accessibility permission that an unattended run
+// cannot grant. So `scripts/shoot.sh` launches a debug build with
+// `NOTEBOOK_SHOOT_VIEW=<capture|tasks|search|chat|editor>` instead: the
+// frontend asks for the value on mount (`shoot_view`), switches to that view,
+// and only once it has painted asks for the panel (`shoot_show_overlay`).
+// Showing last is what lets the harness treat "the panel is on screen" as a
+// true readiness signal rather than guessing a settle delay.
+//
+// Both commands are inert unless the variable is set AND this is a debug
+// build, so nothing here can show the overlay in a release build.
+
+/// The requested screenshot view, or `None` in a release build / a normal run.
+fn shoot_view_env() -> Option<String> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    std::env::var("NOTEBOOK_SHOOT_VIEW")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+}
+
+#[tauri::command]
+fn shoot_view() -> Option<String> {
+    let view = shoot_view_env();
+    if let Some(view) = &view {
+        eprintln!("[shoot] frontend asked for the view: {view}");
+    }
+    view
+}
+
+#[tauri::command]
+fn shoot_show_overlay(app: AppHandle) {
+    if shoot_view_env().is_none() {
+        return;
+    }
+    // `show_and_make_key` is `orderFrontRegardless` + `makeKeyWindow`, and
+    // AppKit ignores those from a background thread — which is where Tauri
+    // runs command handlers. The global-shortcut path is already on the main
+    // thread; this one has to hop there, or the panel silently never appears.
+    let handle = app.clone();
+    let hopped = app.run_on_main_thread(move || {
+        // The dev log is all the harness can read when the panel never shows.
+        eprintln!("[shoot] showing the overlay panel");
+        match handle.get_webview_panel(OVERLAY_WINDOW_LABEL) {
+            Ok(panel) => panel.show_and_make_key(),
+            Err(e) => eprintln!("[shoot] overlay panel not available: {e:?}"),
+        }
+    });
+    if let Err(e) = hopped {
+        eprintln!("[shoot] could not reach the main thread: {e}");
+    }
+}
+
 /// Resident alert scheduler (T9): fires a macOS notification for every note
 /// whose `alert` datetime has passed and that isn't yet marked alerted.
 ///
@@ -678,7 +734,9 @@ pub fn run() {
             vault_mkdir,
             home_dir,
             sidecar_ping,
-            chat_send
+            chat_send,
+            shoot_view,
+            shoot_show_overlay
         ])
         .setup(|app| {
             // Start the agent sidecar first: the enrichment retry pass below
