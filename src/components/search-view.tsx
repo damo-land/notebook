@@ -16,9 +16,9 @@
 // query would mean lifting state into App.
 
 import { useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { searchNotes, type IndexedNote } from "../lib/index-api";
 import { openNote } from "../lib/note-editor-bus";
+import { dismissOverlay, useFocusOnOverlayShown } from "../lib/overlay";
 
 /** Result cap. The index is unbounded; the overlay shows a screenful. */
 const MAX_RESULTS = 20;
@@ -63,14 +63,8 @@ export function SearchView({ onClose }: SearchViewProps) {
     };
   }, [query]);
 
-  // Keep the input focused, including when the overlay window is re-shown
-  // while this view is up.
-  useEffect(() => {
-    inputRef.current?.focus();
-    const focus = () => inputRef.current?.focus();
-    window.addEventListener("focus", focus);
-    return () => window.removeEventListener("focus", focus);
-  }, []);
+  // This view's primary input: focused on mount and on every reopen.
+  useFocusOnOverlayShown(inputRef);
 
   const selectedNote = results[Math.min(selected, Math.max(results.length - 1, 0))] ?? null;
 
@@ -103,7 +97,7 @@ export function SearchView({ onClose }: SearchViewProps) {
       // Hide the overlay AND leave search, so the next plain toggle
       // (alt+space) reopens in capture, not a stale search.
       event.preventDefault();
-      void invoke("hide_overlay");
+      dismissOverlay();
       onClose();
     }
   };

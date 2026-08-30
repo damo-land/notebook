@@ -36,6 +36,19 @@ const OVERLAY_WINDOW_LABEL: &str = "main";
 /// frontend listens for this to move focus into its input (T3 consumes it).
 pub const OVERLAY_SHOWN_EVENT: &str = "overlay-shown";
 
+/// Emitted every time the overlay panel leaves the screen.
+///
+/// The twin of [`OVERLAY_SHOWN_EVENT`], and needed for the same reason: the
+/// webview keeps running while the panel is hidden, so being taken off screen
+/// is invisible to the page unless it is told. The frontend listens for this
+/// to discard unsaved input, which is what makes every dismissal — Esc,
+/// Ctrl+W, the alt+space toggle, and clicking outside — start the next open
+/// from an empty overlay.
+///
+/// Emitted from [`hide_overlay_panel`], the single function every one of those
+/// paths goes through, so no dismissal can skip it.
+pub const OVERLAY_HIDDEN_EVENT: &str = "overlay-hidden";
+
 tauri_panel! {
     panel!(OverlayPanel {
         config: {
@@ -55,24 +68,44 @@ fn show_overlay(app: &AppHandle) {
         return;
     };
     panel.show_and_make_key();
+    emit_overlay_shown(app);
+}
+
+/// Announce [`OVERLAY_SHOWN_EVENT`]. Split out so the screenshot hook's own
+/// present path can announce it too — a capture that did not emit this would
+/// show focus landing by `autoFocus` at mount and prove nothing about reopens.
+fn emit_overlay_shown(app: &AppHandle) {
     use tauri::Emitter;
     if let Err(e) = app.emit(OVERLAY_SHOWN_EVENT, ()) {
         eprintln!("emit {OVERLAY_SHOWN_EVENT}: {e}");
     }
 }
 
-/// The one hide used by every dismissal path: the Esc keymap through
-/// [`hide_overlay`], and the click-outside/resign-key path wired up in `setup`.
+/// The one hide used by every dismissal path: the Esc/Ctrl+W keymap through
+/// [`hide_overlay`], the alt+space toggle, and the click-outside/resign-key
+/// path wired up in `setup`. Announces [`OVERLAY_HIDDEN_EVENT`] so the
+/// frontend can discard unsaved input on all of them alike.
 fn hide_overlay_panel(app: &AppHandle) {
     if let Ok(panel) = app.get_webview_panel(OVERLAY_WINDOW_LABEL) {
         panel.hide();
+    }
+    use tauri::Emitter;
+    if let Err(e) = app.emit(OVERLAY_HIDDEN_EVENT, ()) {
+        eprintln!("emit {OVERLAY_HIDDEN_EVENT}: {e}");
+    }
+    if shoot_view_env().is_some() {
+        eprintln!("[shoot] hid the overlay panel");
     }
 }
 
 fn toggle_overlay(app: &AppHandle) {
     if let Ok(panel) = app.get_webview_panel(OVERLAY_WINDOW_LABEL) {
         if panel.is_visible() {
-            panel.hide();
+            // Through `hide_overlay_panel`, not `panel.hide()`: toggling the
+            // overlay off is the most common dismissal there is, and hiding it
+            // here directly would be the one path that skipped the event and
+            // left the next open holding a stale draft.
+            hide_overlay_panel(app);
             return;
         }
     }
@@ -135,6 +168,22 @@ fn overlay_max_height<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> f6
     match monitor {
         Some(monitor) => {
             let logical = monitor.size().to_logical::<f64>(monitor.scale_factor());
+            // Under the screenshot hook only: the physical/logical conversion
+            // is invisible on a 1x display and 2x wrong on a Retina one, so the
+            // numbers behind the clamp get written to the dev log where a run
+            // can check them against the screen it actually ran on.
+            if shoot_view_env().is_some() {
+                let physical = monitor.size();
+                eprintln!(
+                    "[shoot] monitor {}x{} px @ {}x scale -> {}x{} pt; max overlay height {:.1} pt",
+                    physical.width,
+                    physical.height,
+                    monitor.scale_factor(),
+                    logical.width,
+                    logical.height,
+                    logical.height * OVERLAY_MAX_HEIGHT_FRACTION,
+                );
+            }
             logical.height * OVERLAY_MAX_HEIGHT_FRACTION
         }
         None => OVERLAY_FALLBACK_MAX_HEIGHT,
@@ -180,6 +229,9 @@ fn resize_overlay(app: AppHandle, height: f64) -> Result<f64, String> {
     window
         .set_size(tauri::LogicalSize::new(width, clamped))
         .map_err(|e| e.to_string())?;
+    if shoot_view_env().is_some() {
+        eprintln!("[shoot] resize_overlay: requested {height:.1} pt -> applied {clamped:.1} pt");
+    }
     Ok(clamped)
 }
 
@@ -214,6 +266,46 @@ fn shoot_view() -> Option<String> {
         eprintln!("[shoot] frontend asked for the view: {view}");
     }
     view
+}
+
+/// Content controls for a capture, so a screenshot can show something other
+/// than an empty overlay. Both are inert without `NOTEBOOK_SHOOT_VIEW`.
+#[derive(serde::Serialize)]
+struct ShootInput {
+    /// Text put into the capture input at mount — the overlay has to hold
+    /// content before its height can be shown following that content, and no
+    /// unattended run can type (macOS Accessibility is not granted).
+    seed: Option<String>,
+    /// Text "typed" after a hide/show cycle. Its presence asks the frontend to
+    /// dismiss and reopen the panel before the capture, then insert this at
+    /// the caret of whatever holds DOM focus. Nothing lands unless focus was
+    /// actually restored on reopen, so the resulting PNG is the evidence: the
+    /// typed text present, and the seeded text gone.
+    typed: Option<String>,
+}
+
+/// `\n` is expanded so multi-line values survive being passed as one argument.
+fn shoot_env_text(key: &str) -> Option<String> {
+    shoot_view_env()?;
+    std::env::var(key)
+        .ok()
+        .filter(|v| !v.is_empty())
+        .map(|v| v.replace("\\n", "\n"))
+}
+
+#[tauri::command]
+fn shoot_input() -> ShootInput {
+    let input = ShootInput {
+        seed: shoot_env_text("NOTEBOOK_SHOOT_TEXT"),
+        typed: shoot_env_text("NOTEBOOK_SHOOT_TYPE"),
+    };
+    if let Some(seed) = &input.seed {
+        eprintln!("[shoot] seeding the capture input with {} chars", seed.len());
+    }
+    if let Some(typed) = &input.typed {
+        eprintln!("[shoot] will reopen the panel and type {typed:?} into the focused element");
+    }
+    input
 }
 
 /// How many times [`shoot_show_overlay`] re-presents the panel, and how long it
@@ -256,6 +348,10 @@ fn shoot_present_overlay(app: &AppHandle, attempt: u32) {
                         eprintln!("[shoot] could not focus the overlay: {e}");
                     }
                 }
+                // Same announcement the real show paths make, so a capture
+                // exercises the frontend's focus-on-open wiring rather than
+                // relying on `autoFocus` having run once at mount.
+                emit_overlay_shown(&handle);
                 // The dev log is all the harness can read when nothing appears.
                 eprintln!("[shoot] presented the overlay panel (attempt {attempt})");
             }
@@ -900,6 +996,7 @@ pub fn run() {
             sidecar_ping,
             chat_send,
             shoot_view,
+            shoot_input,
             shoot_show_overlay
         ])
         .setup(|app| {

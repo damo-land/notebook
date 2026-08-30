@@ -23,6 +23,32 @@
 # Because the panel is shown *after* the view has painted, "the panel is on
 # screen" is a true readiness signal rather than a guess.
 #
+# Putting content in the shot
+# ---------------------------
+# The same Accessibility restriction means the harness cannot type either, so
+# an empty overlay is all it could otherwise capture. Two more variables drive
+# the content through the same hook (`shoot_input` in src-tauri/src/lib.rs):
+#
+#   SHOOT_TEXT   text placed in the capture input at mount. Use "\n" for a
+#                newline. This is how the height-follows-content shots are
+#                taken — the window is sized from the rendered content.
+#   SHOOT_TYPE   text "typed" after the panel has been dismissed and reopened.
+#                Setting it makes the frontend hide the panel, show it again,
+#                and then insert this text at the caret of whatever holds DOM
+#                focus. Nothing lands unless focus really did come back on the
+#                reopen, so the PNG is the proof — and any SHOOT_TEXT seeded
+#                beforehand is gone from it, because dismissal clears state.
+#                Give the run a longer SHOOT_SETTLE (say 5) so the capture
+#                happens after the cycle rather than during it.
+#   SHOOT_LABEL  basename for the PNG and dev log, so repeated runs of one view
+#                with different text do not overwrite each other.
+#
+# Example — the overlay at three lines, and the reopen-focus proof:
+#
+#   SHOOT_TEXT='one\ntwo\nthree' SHOOT_LABEL=height-3 scripts/shoot.sh capture
+#   SHOOT_TEXT='draft' SHOOT_TYPE='typed after reopen' SHOOT_SETTLE=5 \
+#     SHOOT_LABEL=reopen-focus scripts/shoot.sh capture
+#
 # Which vault the shot shows
 # ---------------------------
 # Never the user's own. Each run seeds a small fixture vault and points the app
@@ -208,9 +234,50 @@ mkdir -p "$OUT_DIR"
 # earlier one. Note the `enriched:` marker on the knowledge note: without it the
 # app queues a background enrichment job for it on launch, which is a real
 # (billable) model call. Fixture notes must never trigger one.
+#
+# That rebuild is an `rm -rf` on a path the caller controls through
+# SHOOT_VAULT_DIR, so it is guarded: the script only deletes a directory it can
+# prove it created itself, identified by the marker file below. Point
+# SHOOT_VAULT_DIR at a real vault and the run stops with nothing removed.
+# A dotfile so `ls | wc -l` still counts notes, and so it cannot be mistaken
+# for one (the indexer only reads *.md).
+FIXTURE_MARKER=".notebook-shoot-fixture"
+
+# Exits non-zero unless $FIXTURE_VAULT is safe to delete: absent, empty, or
+# carrying our marker. Anything else is someone's real directory.
+assert_fixture_vault_is_ours() {
+  [ -e "$FIXTURE_VAULT" ] || return 0
+
+  if [ ! -d "$FIXTURE_VAULT" ]; then
+    echo "shoot: SHOOT_VAULT_DIR ($FIXTURE_VAULT) exists but is not a directory." >&2
+    echo "       Refusing to delete it." >&2
+    exit 1
+  fi
+  [ ! -f "$FIXTURE_VAULT/$FIXTURE_MARKER" ] || return 0
+  # No marker: only an empty directory is safe to take over.
+  [ -z "$(ls -A "$FIXTURE_VAULT" 2>/dev/null)" ] || {
+    cat >&2 <<EOF
+shoot: refusing to delete $FIXTURE_VAULT
+
+  This run would wipe that directory and reseed it with fixture notes, but it
+  has contents and no $FIXTURE_MARKER marker — so this script did not create
+  it, and it may be a real vault.
+
+  Point SHOOT_VAULT_DIR at a path this script owns (it writes the marker into
+  every vault it seeds), or leave SHOOT_VAULT_DIR unset to use the default
+  under the gitignored output directory. If you really do want this directory
+  gone, delete it yourself first.
+EOF
+    exit 1
+  }
+}
+
 seed_fixture_vault() {
+  assert_fixture_vault_is_ours
   rm -rf "$FIXTURE_VAULT"
   mkdir -p "$FIXTURE_VAULT"
+  # Written first: from here on this directory is provably ours to rebuild.
+  : >"$FIXTURE_VAULT/$FIXTURE_MARKER"
 
   cat >"$FIXTURE_VAULT/20260101-090000-fixture-espresso.md" <<'EOF'
 ---
@@ -343,6 +410,8 @@ launch_app() {
   (
     cd "$REPO_ROOT"
     NOTEBOOK_SHOOT_VIEW="$view" \
+      NOTEBOOK_SHOOT_TEXT="${SHOOT_TEXT:-}" \
+      NOTEBOOK_SHOOT_TYPE="${SHOOT_TYPE:-}" \
       NOTEBOOK_VAULT_DIR="$FIXTURE_VAULT" \
       exec npm run tauri dev
   ) </dev/null >"$log_file" 2>&1 &
@@ -395,8 +464,11 @@ capture_panel() {
 # attempt tears its app down before the next one starts.
 shoot_view() {
   local view="$1"
-  local png="$OUT_DIR/$view.png"
-  local log_file="$OUT_DIR/$view.dev.log"
+  # SHOOT_LABEL names the output, so several runs of the same view — different
+  # SHOOT_TEXT, say — do not overwrite each other's PNG.
+  local name="${SHOOT_LABEL:-$view}"
+  local png="$OUT_DIR/$name.png"
+  local log_file="$OUT_DIR/$name.dev.log"
   local attempt
 
   rm -f "$png"

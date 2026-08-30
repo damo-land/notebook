@@ -28,6 +28,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { appendDelta, finishTurn, type ChatTurn } from "../lib/chat-transcript";
+import { dismissOverlay, useFocusOnOverlayShown } from "../lib/overlay";
 
 export type { ChatTurn };
 
@@ -86,14 +87,8 @@ export function ChatView({ turns, setTurns, session, setSession, onClose }: Chat
     };
   }, [setTurns]);
 
-  // Keep the input focused, including when the overlay is re-shown on top of
-  // this view.
-  useEffect(() => {
-    inputRef.current?.focus();
-    const focus = () => inputRef.current?.focus();
-    window.addEventListener("focus", focus);
-    return () => window.removeEventListener("focus", focus);
-  }, []);
+  // This view's primary input: focused on mount and on every reopen.
+  useFocusOnOverlayShown(inputRef);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: "end" });
@@ -148,7 +143,7 @@ export function ChatView({ turns, setTurns, session, setSession, onClose }: Chat
       // Hide the overlay AND leave chat, so the next plain toggle reopens in
       // capture. The transcript survives for the next `/chat`.
       event.preventDefault();
-      void invoke("hide_overlay");
+      dismissOverlay();
       onClose();
     }
   };

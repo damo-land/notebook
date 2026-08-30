@@ -4,10 +4,28 @@
   padding: 0;
 }
 
+/* Deliberately NOT `height: 100%`. The window's height is driven from the
+   content (src/lib/overlay.ts measures `.overlay` and calls `resize_overlay`),
+   so the page must size to its content rather than to the window — with a
+   percentage height here the measurement would only ever echo back the current
+   window height and the overlay could never shrink. */
 html,
 body,
 #root {
-  height: 100%;
+  height: auto;
+}
+
+/* Past the clamp the content is taller than the window and the page scrolls,
+   which is what keeps the caret reachable. Hide only the *page* scrollbar
+   that then appears — it renders as a bright track down the edge of the
+   panel. Scrolling still works (wheel, and the caret being scrolled into
+   view); the lists inside the tasks and search views keep their own. */
+html {
+  scrollbar-width: none;
+}
+
+html::-webkit-scrollbar {
+  display: none;
 }
 
 body {
@@ -23,9 +41,37 @@ body {
 
 .overlay {
   display: flex;
-  height: 100%;
   padding: 16px;
 }
+
+/* --- Overlay motion (T3) ----------------------------------------------------
+   The appear/dismiss transition, ~120ms. Everything that moves the overlay is
+   in this one block and is gated on the `.overlay-motion` class, so deleting
+   the block (or the class from <main> in src/App.tsx) removes all overlay
+   motion and changes nothing else — the JS that retriggers it degrades to a
+   no-op. Keep the duration in step with LEAVE_MS in src/lib/overlay.ts. */
+.overlay-motion {
+  animation: overlay-enter 120ms ease-out;
+}
+
+.overlay-motion.overlay-leaving {
+  animation: overlay-leave 120ms ease-in forwards;
+}
+
+@keyframes overlay-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.985);
+  }
+}
+
+@keyframes overlay-leave {
+  to {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.99);
+  }
+}
+/* --- end overlay motion --- */
 
 .capture {
   display: flex;
@@ -46,6 +92,10 @@ body {
   border-radius: 8px;
   outline: none;
   resize: none;
+  /* The element's height is set from its scrollHeight as the text grows, so
+     it never has anything to scroll; hidden keeps that measurement honest and
+     stops a scrollbar flashing mid-keystroke. */
+  overflow: hidden;
 }
 
 /* command palette / field selector */
