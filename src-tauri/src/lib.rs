@@ -1,6 +1,7 @@
 pub mod alerts;
 pub mod enrich;
 pub mod index;
+pub mod placement;
 
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
@@ -63,12 +64,162 @@ tauri_panel! {
 ///
 /// Every show path goes through here, so "the panel is visible" and "the
 /// frontend has been told" can never drift apart.
+///
+/// The panel becomes key WITHOUT the app activating: setup gives it the
+/// `NonactivatingPanel` style mask (the Spotlight/Alfred mechanism), which is
+/// what lets `makeKeyWindow` succeed while another app stays frontmost. A
+/// scratch AppKit probe confirmed the mechanism: without that mask an
+/// accessory app's `makeKeyWindow` silently fails (`isKeyWindow` stays false)
+/// whenever another app is active — exactly the shipped "shown but typing
+/// goes elsewhere" bug.
 fn show_overlay(app: &AppHandle) {
     let Ok(panel) = app.get_webview_panel(OVERLAY_WINDOW_LABEL) else {
         return;
     };
+    place_overlay_on_cursor_display(app);
     panel.show_and_make_key();
+    log_key_window_status(panel.as_ref());
+    log_key_window_status_delayed(app, Duration::from_millis(300));
     emit_overlay_shown(app);
+}
+
+/// Logs whether the panel actually became key, immediately after the show.
+///
+/// `isKeyWindow` asked of the panel itself is the strongest check available
+/// from inside the process — but it is still an in-process probe, and an
+/// earlier in-page probe once passed while the real alt+space path was
+/// broken. The end-to-end truth (a keystroke landing in the input with no
+/// prior click) can only be confirmed by a human at the keyboard.
+fn log_key_window_status(panel: &dyn tauri_nspanel::Panel) {
+    let ns = panel.as_panel();
+    eprintln!(
+        "[overlay] key-window check after show_and_make_key: isKeyWindow={} styleMask={:#x}",
+        ns.isKeyWindow(),
+        ns.styleMask().0,
+    );
+}
+
+/// Asks the same question again shortly after the show settles, and retries
+/// `makeKeyWindow` once if the answer is still no.
+///
+/// Measured behaviour (harness dev logs): on the process's very FIRST show
+/// the immediate check reads false — AppKit finishes granting key status a
+/// beat after `makeKeyWindow` returns for a window that has never been on
+/// screen — and every later show reads true immediately. The retry covers
+/// that first-show window; it is skipped when the panel was hidden again in
+/// the meantime, so it can never steal key status back after a dismissal.
+fn log_key_window_status_delayed(app: &AppHandle, delay: Duration) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(delay);
+        let _ = app.clone().run_on_main_thread(move || {
+            if let Ok(panel) = app.get_webview_panel(OVERLAY_WINDOW_LABEL) {
+                if !panel.is_visible() {
+                    return;
+                }
+                let was_key = panel.as_panel().isKeyWindow();
+                if !was_key {
+                    panel.make_key_window();
+                }
+                eprintln!(
+                    "[overlay] key-window recheck after {}ms: isKeyWindow={}{}",
+                    delay.as_millis(),
+                    panel.as_panel().isKeyWindow(),
+                    if was_key { "" } else { " (retried makeKeyWindow)" },
+                );
+            }
+        });
+    });
+}
+
+/// The display the overlay was last placed on, in points. Written by
+/// [`place_overlay_on_cursor_display`] on every show; read by the height
+/// clamp so it derives from the CHOSEN display rather than whatever
+/// `current_monitor` thinks mid-move.
+#[derive(Default)]
+struct ChosenDisplay(Mutex<Option<placement::Rect>>);
+
+/// Moves the overlay to the display containing the mouse cursor: horizontally
+/// centered, top edge at [`placement::OVERLAY_TOP_FRACTION`] of that
+/// display's height. Runs on EVERY show, so the dynamic-height resizes of a
+/// previous session cannot leave a stale anchor (the old `center: true`
+/// placement centered once, at launch, at the original 320pt size).
+///
+/// All math is in points — see the doc comment on [`placement`] for why the
+/// tao "physical" numbers must not be compared across monitors directly.
+fn place_overlay_on_cursor_display(app: &AppHandle) {
+    let Some(window) = app.get_webview_window(OVERLAY_WINDOW_LABEL) else {
+        return;
+    };
+    let monitors = match window.available_monitors() {
+        Ok(monitors) if !monitors.is_empty() => monitors,
+        Ok(_) => return,
+        Err(e) => {
+            eprintln!("[overlay] available_monitors failed: {e}");
+            return;
+        }
+    };
+    let cursor = match app.cursor_position() {
+        Ok(cursor) => cursor,
+        Err(e) => {
+            eprintln!("[overlay] cursor_position failed: {e}");
+            return;
+        }
+    };
+    let primary_scale = window
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .map(|m| m.scale_factor())
+        .unwrap_or(1.0);
+    let cursor_pt = placement::cursor_points((cursor.x, cursor.y), primary_scale);
+
+    let rects: Vec<placement::Rect> = monitors
+        .iter()
+        .map(|m| {
+            placement::monitor_rect_points(
+                (m.position().x as f64, m.position().y as f64),
+                (m.size().width as f64, m.size().height as f64),
+                m.scale_factor(),
+            )
+        })
+        .collect();
+    let Some(idx) = placement::pick_monitor(cursor_pt, &rects) else {
+        return;
+    };
+    let chosen = rects[idx];
+
+    // The panel's logical width is scale-invariant (config says 640pt), so
+    // reading it through the window's CURRENT monitor scale is correct even
+    // when the chosen display has a different one.
+    let width_pt = window
+        .scale_factor()
+        .ok()
+        .zip(window.inner_size().ok())
+        .map(|(scale, size)| size.to_logical::<f64>(scale).width)
+        .unwrap_or(640.0);
+    let (x, y) = placement::overlay_origin(&chosen, width_pt);
+    if let Err(e) = window.set_position(tauri::LogicalPosition::new(x, y)) {
+        eprintln!("[overlay] set_position failed: {e}");
+        return;
+    }
+    eprintln!(
+        "[overlay] cursor ({:.1}, {:.1}) pt -> monitor {} \"{}\" at ({:.0}, {:.0}) {:.0}x{:.0} pt @ {}x -> origin ({:.1}, {:.1}) pt",
+        cursor_pt.0,
+        cursor_pt.1,
+        idx,
+        monitors[idx].name().map(String::as_str).unwrap_or("?"),
+        chosen.x,
+        chosen.y,
+        chosen.width,
+        chosen.height,
+        monitors[idx].scale_factor(),
+        x,
+        y,
+    );
+    if let Ok(mut guard) = app.state::<ChosenDisplay>().0.lock() {
+        *guard = Some(chosen);
+    }
 }
 
 /// Announce [`OVERLAY_SHOWN_EVENT`]. Split out so the screenshot hook's own
@@ -156,10 +307,27 @@ const OVERLAY_FALLBACK_MAX_HEIGHT: f64 = 480.0;
 /// [`OVERLAY_MAX_HEIGHT_FRACTION`] of the height of the screen the overlay is
 /// currently on, in logical points.
 ///
-/// "Active screen" is the monitor the panel itself sits on — the overlay is
-/// centred on whichever display the user summoned it to, and clamping against
-/// the primary display would be wrong on a mixed-height multi-monitor setup.
-fn overlay_max_height<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> f64 {
+/// "Active screen" is first and foremost the display the show path CHOSE
+/// (`chosen`, from [`place_overlay_on_cursor_display`] — the display under
+/// the cursor at summon time). `current_monitor` is only the fallback for a
+/// resize that arrives before any show has run: it reads the window's frame,
+/// which mid-move can still be the previous display, and clamping against the
+/// primary would be wrong on a mixed-height multi-monitor setup.
+fn overlay_max_height<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    chosen: Option<placement::Rect>,
+) -> f64 {
+    if let Some(rect) = chosen {
+        if shoot_view_env().is_some() {
+            eprintln!(
+                "[shoot] clamp derives from the chosen display: {:.0}x{:.0} pt -> max overlay height {:.1} pt",
+                rect.width,
+                rect.height,
+                rect.height * OVERLAY_MAX_HEIGHT_FRACTION,
+            );
+        }
+        return rect.height * OVERLAY_MAX_HEIGHT_FRACTION;
+    }
     let monitor = window
         .current_monitor()
         .ok()
@@ -216,7 +384,13 @@ fn resize_overlay(app: AppHandle, height: f64) -> Result<f64, String> {
         .get_webview_window(OVERLAY_WINDOW_LABEL)
         .ok_or("overlay window not found")?;
 
-    let clamped = clamp_overlay_height(height, overlay_max_height(&window));
+    let chosen = app
+        .state::<ChosenDisplay>()
+        .0
+        .lock()
+        .ok()
+        .and_then(|guard| *guard);
+    let clamped = clamp_overlay_height(height, overlay_max_height(&window, chosen));
 
     // Width is untouched — only the height is content-driven.
     let scale = window.scale_factor().map_err(|e| e.to_string())?;
@@ -340,7 +514,12 @@ fn shoot_present_overlay(app: &AppHandle, attempt: u32) {
                     NSWindowCollectionBehavior::CanJoinAllSpaces
                         | NSWindowCollectionBehavior::FullScreenAuxiliary,
                 );
+                // Same placement the real show path performs, so a harness
+                // run's dev log carries the chosen-monitor/origin evidence.
+                place_overlay_on_cursor_display(&handle);
                 panel.show_and_make_key();
+                log_key_window_status(panel.as_ref());
+                log_key_window_status_delayed(&handle, Duration::from_millis(300));
                 // Ordering in is not enough while another app is frontmost;
                 // activating this app is what actually gets it drawn.
                 if let Some(window) = handle.get_webview_window(OVERLAY_WINDOW_LABEL) {
@@ -981,6 +1160,7 @@ pub fn run() {
                 .build(),
         )
         .manage(SidecarState::default())
+        .manage(ChosenDisplay::default())
         .invoke_handler(tauri::generate_handler![
             hide_overlay,
             resize_overlay,
@@ -1097,17 +1277,36 @@ pub fn run() {
             // `"transparent": true` on the window and `"macOSPrivateApi": true`
             // at the app level. Without those the webview paints an opaque
             // layer over the effect view and none of it is visible.
+            // The 12.0 radius rounds the NSVisualEffectView itself (the
+            // material), and src/App.css puts the SAME 12px border-radius on
+            // the webview's #root so the web content is clipped to the exact
+            // shape the material has — neither square material behind rounded
+            // CSS nor the reverse.
             if let Err(e) = window_vibrancy::apply_vibrancy(
                 &window,
                 window_vibrancy::NSVisualEffectMaterial::HudWindow,
                 Some(window_vibrancy::NSVisualEffectState::Active),
-                None,
+                Some(12.0),
             ) {
                 eprintln!("[notebook] vibrancy (HudWindow) not applied: {e}");
             }
 
             // Convert the main window into a floating NSPanel.
-            window.to_panel::<OverlayPanel>()?;
+            let panel = window.to_panel::<OverlayPanel>()?;
+
+            // NonactivatingPanel is the mechanism behind "summon, then just
+            // type": it lets `makeKeyWindow` succeed while the app stays an
+            // inactive accessory, so the panel takes keyboard focus without
+            // the frontmost app losing active state (its menu bar stays, its
+            // windows keep their focused appearance). Without this bit AppKit
+            // silently refuses key status for a background app's window — the
+            // panel was shown but every keystroke kept going to the previous
+            // app. The window is borderless (`decorations: false`), so the
+            // mask is exactly this one bit; verified in a scratch AppKit
+            // probe before wiring (see show_overlay).
+            panel.set_style_mask(
+                tauri_nspanel::objc2_app_kit::NSWindowStyleMask::NonactivatingPanel,
+            );
 
             // Click-outside dismissal. Clicking anything else makes the panel
             // resign key, and macOS reports that through tao's own window
