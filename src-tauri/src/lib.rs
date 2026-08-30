@@ -28,6 +28,14 @@ pub const TASKS_VIEW_SHORTCUT: &str = "alt+shift+space";
 
 const OVERLAY_WINDOW_LABEL: &str = "main";
 
+/// Emitted every time the overlay panel is put on screen.
+///
+/// The panel is shown from Rust — a global shortcut, or the tray — so the
+/// webview is never told by the act of showing that it just became visible:
+/// it is already mounted and running, and nothing in the DOM changes. The
+/// frontend listens for this to move focus into its input (T3 consumes it).
+pub const OVERLAY_SHOWN_EVENT: &str = "overlay-shown";
+
 tauri_panel! {
     panel!(OverlayPanel {
         config: {
@@ -38,22 +46,43 @@ tauri_panel! {
     })
 }
 
+/// Puts the overlay on screen and announces it as [`OVERLAY_SHOWN_EVENT`].
+///
+/// Every show path goes through here, so "the panel is visible" and "the
+/// frontend has been told" can never drift apart.
+fn show_overlay(app: &AppHandle) {
+    let Ok(panel) = app.get_webview_panel(OVERLAY_WINDOW_LABEL) else {
+        return;
+    };
+    panel.show_and_make_key();
+    use tauri::Emitter;
+    if let Err(e) = app.emit(OVERLAY_SHOWN_EVENT, ()) {
+        eprintln!("emit {OVERLAY_SHOWN_EVENT}: {e}");
+    }
+}
+
+/// The one hide used by every dismissal path: the Esc keymap through
+/// [`hide_overlay`], and the click-outside/resign-key path wired up in `setup`.
+fn hide_overlay_panel(app: &AppHandle) {
+    if let Ok(panel) = app.get_webview_panel(OVERLAY_WINDOW_LABEL) {
+        panel.hide();
+    }
+}
+
 fn toggle_overlay(app: &AppHandle) {
     if let Ok(panel) = app.get_webview_panel(OVERLAY_WINDOW_LABEL) {
         if panel.is_visible() {
             panel.hide();
-        } else {
-            panel.show_and_make_key();
+            return;
         }
     }
+    show_overlay(app);
 }
 
 /// Tasks-view shortcut: always show (never toggle-hide) and tell the
 /// frontend to switch to the tasks view.
 fn open_tasks_view(app: &AppHandle) {
-    if let Ok(panel) = app.get_webview_panel(OVERLAY_WINDOW_LABEL) {
-        panel.show_and_make_key();
-    }
+    show_overlay(app);
     use tauri::Emitter;
     if let Err(e) = app.emit("open-tasks-view", ()) {
         eprintln!("emit open-tasks-view: {e}");
@@ -63,9 +92,95 @@ fn open_tasks_view(app: &AppHandle) {
 /// Invoked from the frontend keymap (Esc / Ctrl+W) to hide the overlay.
 #[tauri::command]
 fn hide_overlay(app: AppHandle) {
-    if let Ok(panel) = app.get_webview_panel(OVERLAY_WINDOW_LABEL) {
-        panel.hide();
+    hide_overlay_panel(&app);
+}
+
+// --- Overlay height ----------------------------------------------------------
+//
+// The overlay grows to fit its content (T3 measures the DOM and calls
+// `resize_overlay`). The bounds are enforced *here* rather than in the caller:
+// the height arrives from the webview, and a runaway measurement there must not
+// be able to stretch the panel past the screen or collapse it to nothing.
+
+/// Smallest height the overlay may be resized to, in logical points.
+///
+/// One line of the capture input plus the panel's padding. Below this the
+/// input the user is typing into starts to clip.
+pub const OVERLAY_MIN_HEIGHT: f64 = 96.0;
+
+/// Largest share of the *active screen's* height the overlay may occupy.
+///
+/// Spotlight stops well short of filling the screen and so does this: past
+/// roughly 60% the overlay stops reading as a floating panel and starts
+/// reading as a window.
+pub const OVERLAY_MAX_HEIGHT_FRACTION: f64 = 0.60;
+
+/// Maximum height, in logical points, used only when macOS reports no monitor
+/// at all. Deliberately conservative: a clamp that is too short is a visual
+/// annoyance, one that is taller than the screen is unusable.
+const OVERLAY_FALLBACK_MAX_HEIGHT: f64 = 480.0;
+
+/// [`OVERLAY_MAX_HEIGHT_FRACTION`] of the height of the screen the overlay is
+/// currently on, in logical points.
+///
+/// "Active screen" is the monitor the panel itself sits on — the overlay is
+/// centred on whichever display the user summoned it to, and clamping against
+/// the primary display would be wrong on a mixed-height multi-monitor setup.
+fn overlay_max_height<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> f64 {
+    let monitor = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten());
+    match monitor {
+        Some(monitor) => {
+            let logical = monitor.size().to_logical::<f64>(monitor.scale_factor());
+            logical.height * OVERLAY_MAX_HEIGHT_FRACTION
+        }
+        None => OVERLAY_FALLBACK_MAX_HEIGHT,
     }
+}
+
+/// `requested` confined to [`OVERLAY_MIN_HEIGHT`]..=`max`.
+///
+/// Split out from [`resize_overlay`] purely so it can be tested without a
+/// running Tauri app — this is the part that has to be right.
+pub fn clamp_overlay_height(requested: f64, max: f64) -> f64 {
+    // `.max(MIN)` first, not paranoia: `f64::clamp` panics when min > max,
+    // which a display shorter than ~160pt would produce.
+    let max = max.max(OVERLAY_MIN_HEIGHT);
+    // NaN has no ordering, so it would slip through `clamp` untouched; fall
+    // back to the minimum rather than handing AppKit a garbage frame.
+    if requested.is_finite() {
+        requested.clamp(OVERLAY_MIN_HEIGHT, max)
+    } else {
+        OVERLAY_MIN_HEIGHT
+    }
+}
+
+/// Resizes the overlay to `height` logical points, clamped to
+/// [`OVERLAY_MIN_HEIGHT`]..=[`overlay_max_height`]. Returns the height actually
+/// applied, so the caller can see when the clamp bit.
+#[tauri::command]
+fn resize_overlay(app: AppHandle, height: f64) -> Result<f64, String> {
+    let window = app
+        .get_webview_window(OVERLAY_WINDOW_LABEL)
+        .ok_or("overlay window not found")?;
+
+    let clamped = clamp_overlay_height(height, overlay_max_height(&window));
+
+    // Width is untouched — only the height is content-driven.
+    let scale = window.scale_factor().map_err(|e| e.to_string())?;
+    let width = window
+        .inner_size()
+        .map_err(|e| e.to_string())?
+        .to_logical::<f64>(scale)
+        .width;
+
+    window
+        .set_size(tauri::LogicalSize::new(width, clamped))
+        .map_err(|e| e.to_string())?;
+    Ok(clamped)
 }
 
 // --- Dev-only screenshot hook (scripts/shoot.sh) -----------------------------
@@ -772,6 +887,7 @@ pub fn run() {
         .manage(SidecarState::default())
         .invoke_handler(tauri::generate_handler![
             hide_overlay,
+            resize_overlay,
             search_notes,
             list_tasks,
             due_alerts,
@@ -863,11 +979,70 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            // Convert the main window into a floating NSPanel.
             let window = app
                 .get_webview_window(OVERLAY_WINDOW_LABEL)
                 .expect("overlay window must exist");
+
+            // Native macOS material behind the webview.
+            //
+            // HudWindow is the material the system's own HUD panels use: dark,
+            // heavily blurred, and legible over any wallpaper — the closest
+            // stock match for a Spotlight-style overlay. The lighter materials
+            // (Sidebar, Popover, HeaderView) read as document chrome, and
+            // UnderWindowBackground is tuned for a full window behind content.
+            //
+            // `NSVisualEffectState::Active` rather than the default
+            // FollowsWindowActiveState: an overlay that flattens to plain grey
+            // the moment it is not key is exactly the "fixed grey background
+            // field" this redesign exists to get rid of.
+            //
+            // This only shows through because tauri.conf.json sets
+            // `"transparent": true` on the window and `"macOSPrivateApi": true`
+            // at the app level. Without those the webview paints an opaque
+            // layer over the effect view and none of it is visible.
+            if let Err(e) = window_vibrancy::apply_vibrancy(
+                &window,
+                window_vibrancy::NSVisualEffectMaterial::HudWindow,
+                Some(window_vibrancy::NSVisualEffectState::Active),
+                None,
+            ) {
+                eprintln!("[notebook] vibrancy (HudWindow) not applied: {e}");
+            }
+
+            // Convert the main window into a floating NSPanel.
             window.to_panel::<OverlayPanel>()?;
+
+            // Click-outside dismissal. Clicking anything else makes the panel
+            // resign key, and macOS reports that through tao's own window
+            // delegate as `Focused(false)` — the same hide Esc uses.
+            //
+            // Deliberately NOT a tauri-nspanel `panel_event!` delegate:
+            // `set_event_handler` swaps out tao's delegate wholesale, so Tauri
+            // would stop emitting window events at all — including this one.
+            // `to_panel` only reclasses the window, leaving tao's delegate
+            // (and therefore this event) intact.
+            //
+            // Suppressed under the screenshot hook, and only there. The harness
+            // forces the panel on screen from a script while another app holds
+            // the foreground, so the panel takes key and loses it again within
+            // the same second — measured: 31 present attempts against 10
+            // `resigned key` hides in one run, and the capture never found a
+            // visible panel. Dismissal is not what that run is testing, and
+            // leaving it armed makes the harness untestable rather than making
+            // it honest. `shoot_view_env` is already debug-build-only, so a
+            // release build cannot reach this branch at all.
+            let dismiss_handle = app.handle().clone();
+            let shooting = shoot_view_env().is_some();
+            window.on_window_event(move |event| {
+                if let tauri::WindowEvent::Focused(false) = event {
+                    if shooting {
+                        eprintln!("[notebook] overlay resigned key (screenshot hook: not hiding)");
+                        return;
+                    }
+                    eprintln!("[notebook] overlay resigned key: hiding");
+                    hide_overlay_panel(&dismiss_handle);
+                }
+            });
 
             Ok(())
         })

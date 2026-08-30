@@ -285,6 +285,18 @@ pub fn due_alerts(conn: &Connection, now: &str) -> Result<Vec<NoteRow>> {
 /// `~/.config/notebook/config.json` `{ "vaultDir" }` if present, else
 /// `<home>/Notebook`; a leading `~` expands to `home`.
 pub fn resolve_vault_dir(home: &Path) -> PathBuf {
+    // `NOTEBOOK_VAULT_DIR` wins over everything below. It exists so a tool can
+    // point the app at a throwaway vault — `scripts/shoot.sh` uses it so a
+    // screenshot can never contain the user's real notes.
+    //
+    // Blank (or whitespace-only) is treated as unset rather than as "the
+    // current directory": an exported-but-empty variable must leave resolution
+    // exactly as it is when the variable is absent.
+    if let Ok(dir) = std::env::var("NOTEBOOK_VAULT_DIR") {
+        if !dir.trim().is_empty() {
+            return PathBuf::from(dir);
+        }
+    }
     let config = home.join(".config/notebook/config.json");
     if let Ok(raw) = std::fs::read_to_string(config) {
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) {
@@ -347,4 +359,76 @@ pub fn spawn_watcher(
         }
     });
     Ok(watcher)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_vault_dir;
+    use std::path::PathBuf;
+
+    const OVERRIDE: &str = "NOTEBOOK_VAULT_DIR";
+
+    fn scratch_home(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "notebook-vault-dir-test-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// The `NOTEBOOK_VAULT_DIR` override wins over both the config file and the
+    /// `~/Notebook` default — and, crucially, changes nothing when it is unset.
+    ///
+    /// One test rather than four: `NOTEBOOK_VAULT_DIR` is process-global state,
+    /// and separate `#[test]` fns run on parallel threads in the same process,
+    /// so each one would see the others' writes.
+    #[test]
+    fn vault_dir_override_wins_and_is_inert_when_unset() {
+        // A home with no config file: resolution falls through to ~/Notebook.
+        let plain = scratch_home("plain");
+        // A home whose config file names a `~`-relative vault.
+        let configured = scratch_home("configured");
+        std::fs::create_dir_all(configured.join(".config/notebook")).unwrap();
+        std::fs::write(
+            configured.join(".config/notebook/config.json"),
+            r#"{"vaultDir": "~/Vaults/work"}"#,
+        )
+        .unwrap();
+
+        let default_dir = plain.join("Notebook");
+        let config_dir = PathBuf::from(format!("{}/Vaults/work", configured.display()));
+
+        // Baseline: exactly today's behaviour.
+        std::env::remove_var(OVERRIDE);
+        assert_eq!(resolve_vault_dir(&plain), default_dir);
+        assert_eq!(resolve_vault_dir(&configured), config_dir);
+
+        // Blank and whitespace-only are treated as unset, so an exported-but-
+        // empty variable cannot silently shadow the user's configured vault.
+        for blank in ["", "   "] {
+            std::env::set_var(OVERRIDE, blank);
+            assert_eq!(resolve_vault_dir(&plain), default_dir);
+            assert_eq!(resolve_vault_dir(&configured), config_dir);
+        }
+
+        // Set: takes precedence over both.
+        let fixture = plain.join("fixture-vault");
+        std::env::set_var(OVERRIDE, &fixture);
+        assert_eq!(resolve_vault_dir(&plain), fixture);
+        assert_eq!(resolve_vault_dir(&configured), fixture);
+
+        // And removing it restores the baseline byte for byte.
+        std::env::remove_var(OVERRIDE);
+        assert_eq!(resolve_vault_dir(&plain), default_dir);
+        assert_eq!(resolve_vault_dir(&configured), config_dir);
+
+        let _ = std::fs::remove_dir_all(&plain);
+        let _ = std::fs::remove_dir_all(&configured);
+    }
 }
