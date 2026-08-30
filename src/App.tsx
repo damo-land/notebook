@@ -21,6 +21,7 @@ import {
   useOverlayMotion,
   OVERLAY_HIDDEN_EVENT,
 } from "./lib/overlay";
+import { restoreView } from "./lib/view-restore";
 import { ChatView, type ChatTurn } from "./components/chat-view";
 import { CommandPalette, type CommandItem } from "./components/command-palette";
 import { NoteEditor } from "./components/note-editor";
@@ -189,20 +190,34 @@ function App() {
   //
   // The chat transcript is the one thing kept: T14's criterion holds it for
   // the session, and it is not unsaved input — it is already-sent
-  // conversation. It is unreachable from a fresh open anyway, since the view
-  // resets to capture.
+  // conversation. And because it is kept, the view does NOT always reset to
+  // capture (T3): a non-empty transcript means the next open resumes the
+  // conversation instead of stranding it. The rule is the pure
+  // restoreView (src/lib/view-restore.ts).
+  const transcriptEmpty = chatTurns.length === 0;
   useEffect(() => {
     const unlisten = listen(OVERLAY_HIDDEN_EVENT, () => {
       setBody("");
       setPaletteIndex(0);
       resetToPlain(); // mode, field menu, in-progress field text, chips
       setEditing(null); // an open note editor: draft discarded
-      setView("capture");
+      setView(restoreView({ transcriptEmpty }));
     });
     return () => {
       void unlisten.then((f) => f());
     };
-  }, [resetToPlain]);
+  }, [resetToPlain, transcriptEmpty]);
+
+  // Tell Rust when hiding on resign-key must be suppressed (T3): while the
+  // chat view is up, or a chat turn is still streaming in — the moment an
+  // answer lands, something briefly takes key status off the panel (root
+  // cause unconfirmed) and the resign-key hide was closing the chat mid-read.
+  // Streaming-ness is derived from the transcript, same as ChatView's `busy`,
+  // so the flag holds even if the user Esc-ed back to capture mid-answer.
+  const chatBusy = chatTurns[chatTurns.length - 1]?.streaming === true;
+  useEffect(() => {
+    void invoke("set_chat_active", { active: view === "chat" || chatBusy });
+  }, [view, chatBusy]);
 
   // Grow the capture input to fit its text. `rows={1}` is the floor, so an
   // empty overlay is a single row; each added line makes the element taller,

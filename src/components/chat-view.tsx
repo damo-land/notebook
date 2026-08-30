@@ -158,8 +158,9 @@ export function ChatView({ turns, setTurns, session, setSession, onClose }: Chat
       return;
     }
     if (event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === "w") {
-      // Hide the overlay AND leave chat, so the next plain toggle reopens in
-      // capture. The transcript survives for the next `/chat`.
+      // Hide the overlay AND leave chat. The transcript survives, so App's
+      // overlay-hidden reset (restoreView, T3) puts the next open straight
+      // back into the conversation.
       event.preventDefault();
       dismissOverlay();
       onClose();
