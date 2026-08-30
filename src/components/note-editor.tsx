@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { Note } from "../lib/vault";
+import { useFocusOnOverlayShown } from "../lib/overlay";
 
 interface NoteEditorProps {
   note: Note;
@@ -24,7 +25,11 @@ function shortDate(iso: string): string {
  */
 export function NoteEditor({ note, onSave, onClose }: NoteEditorProps) {
   const [draft, setDraft] = useState(note.body);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fm = note.frontmatter;
+
+  // This view's primary input: focused on mount and on every reopen.
+  useFocusOnOverlayShown(textareaRef);
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Escape") {
@@ -56,6 +61,7 @@ export function NoteEditor({ note, onSave, onClose }: NoteEditorProps) {
         <span className="chip-hint">editing · Enter/Cmd+S save · Esc cancel</span>
       </div>
       <textarea
+        ref={textareaRef}
         className="overlay-input"
         value={draft}
         onChange={(e) => setDraft(e.target.value)}

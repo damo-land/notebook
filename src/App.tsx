@@ -13,6 +13,13 @@ import {
 import { homeDir, tauriVaultFs } from "./lib/vault-fs";
 import { parseDateEntry, parseDateTimeEntry } from "./lib/date-entry";
 import { onOpenNote } from "./lib/note-editor-bus";
+import {
+  dismissOverlay,
+  useFocusOnOverlayShown,
+  useOverlayAutoHeight,
+  useOverlayMotion,
+  OVERLAY_HIDDEN_EVENT,
+} from "./lib/overlay";
 import { ChatView, type ChatTurn } from "./components/chat-view";
 import { CommandPalette, type CommandItem } from "./components/command-palette";
 import { NoteEditor } from "./components/note-editor";
@@ -52,6 +59,18 @@ function fieldsForMode(mode: Mode): CommandItem[] {
   return [];
 }
 
+/** `shoot_input` return value (src-tauri/src/lib.rs ShootInput). */
+interface ShootInput {
+  seed: string | null;
+  typed: string | null;
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Guards the screenshot hook's show/hide/show sequence against StrictMode's
+ *  double mount. Module scope so it survives the remount. */
+let shootSequenceStarted = false;
+
 function App() {
   const [mode, setMode] = useState<Mode>("plain");
   const [body, setBody] = useState("");
@@ -81,8 +100,17 @@ function App() {
   const [chatSession, setChatSession] = useState<string | null>(null);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const overlayRef = useRef<HTMLElement>(null);
   const vaultDirRef = useRef<string | null>(null);
   const savingRef = useRef(false);
+
+  // The window follows the rendered content's height, and the appear
+  // animation is replayed on every open. Both belong to the shell, so they
+  // hang off the one <main> every view renders inside.
+  useOverlayAutoHeight(overlayRef);
+  useOverlayMotion(overlayRef);
+  // Capture's primary input. The other four views focus their own.
+  useFocusOnOverlayShown(textareaRef);
 
   // Palette is derived state: open while plain capture holds a single line
   // starting with "/" (i.e. "/" was typed into an empty input). Clearing the
@@ -116,13 +144,6 @@ function App() {
     };
   }, []);
 
-  // Re-focus the input whenever the overlay window is shown/focused.
-  useEffect(() => {
-    const focus = () => textareaRef.current?.focus();
-    window.addEventListener("focus", focus);
-    return () => window.removeEventListener("focus", focus);
-  }, []);
-
   /** Back to plain capture: mode + collected fields discarded, body kept. */
   const resetToPlain = useCallback(() => {
     setMode("plain");
@@ -134,6 +155,48 @@ function App() {
     setCategory(null);
     setAlertAt(null);
   }, []);
+
+  // Dismissal discards unsaved input.
+  //
+  // THIS IS DELIBERATE, NOT A BUG. The overlay used to keep whatever had been
+  // typed while it was hidden, so reopening resumed the old draft; the
+  // redesign reverses that on purpose (spec: "dismissal discards anything
+  // unsaved"), so every open starts from a clean overlay. If you are here
+  // because a draft went missing after Esc — that is the specified behaviour.
+  // Restore it by deleting this effect, not by patching around it.
+  //
+  // Rust emits the event from `hide_overlay_panel`, which Esc, Ctrl+W, the
+  // alt+space toggle and clicking outside all funnel through — so all four
+  // clear identically. The clearing runs while the panel is off screen, so
+  // the wipe is never visible.
+  //
+  // The chat transcript is the one thing kept: T14's criterion holds it for
+  // the session, and it is not unsaved input — it is already-sent
+  // conversation. It is unreachable from a fresh open anyway, since the view
+  // resets to capture.
+  useEffect(() => {
+    const unlisten = listen(OVERLAY_HIDDEN_EVENT, () => {
+      setBody("");
+      setPaletteIndex(0);
+      resetToPlain(); // mode, field menu, in-progress field text, chips
+      setEditing(null); // an open note editor: draft discarded
+      setView("capture");
+    });
+    return () => {
+      void unlisten.then((f) => f());
+    };
+  }, [resetToPlain]);
+
+  // Grow the capture input to fit its text. `rows={1}` is the floor, so an
+  // empty overlay is a single row; each added line makes the element taller,
+  // which grows <main>, which the auto-height hook turns into a window resize.
+  // Height is cleared before measuring or `scrollHeight` would never shrink.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [body, editingField, fieldMenuOpen, view, editing]);
 
   const save = useCallback(
     async (
@@ -158,7 +221,7 @@ function App() {
         });
         setBody("");
         resetToPlain();
-        void invoke("hide_overlay");
+        dismissOverlay();
       } catch (err) {
         console.error("capture failed:", err);
       } finally {
@@ -191,6 +254,13 @@ function App() {
   // switch to the requested view and only then ask Rust to show the panel.
   // Showing last is what makes "the panel is on screen" a reliable readiness
   // signal for the harness.
+  //
+  // `shoot_input` adds the content half, which the height and focus criteria
+  // both need and which no unattended run can type (macOS Accessibility is not
+  // granted, so there is no keystroke injection): `seed` is placed in the
+  // input at mount, and `typed` — if set — makes this hook dismiss and reopen
+  // the panel and then insert text at the caret, so one PNG shows whether
+  // focus came back and whether the dismissal cleared the seeded draft.
   useEffect(() => {
     void (async () => {
       const target = await invoke<string | null>("shoot_view");
@@ -207,10 +277,32 @@ function App() {
         if (!first) throw new Error("no note in the vault to open in the editor");
         setEditing(await readNote(tauriVaultFs, vaultDir, first.id));
       }
+      const input = await invoke<ShootInput>("shoot_input");
+      if (input.seed !== null) setBody(input.seed);
+
+      // StrictMode mounts this effect twice in dev; the show/hide/show
+      // sequence below must not be interleaved with a second copy of itself.
+      if (shootSequenceStarted) return;
+      shootSequenceStarted = true;
+
       // A timer, not requestAnimationFrame: the panel is still hidden here and
       // a webview in an off-screen window never runs animation frames, so the
       // rAF callback would never fire and the panel would never appear.
-      setTimeout(() => void invoke("shoot_show_overlay"), 100);
+      await sleep(100);
+      await invoke("shoot_show_overlay");
+      if (input.typed === null) return;
+
+      // Reopen proof. Hide the panel the way Esc does, show it again, then
+      // insert text — `insertText` goes to the caret of whatever holds DOM
+      // focus and nowhere else, so nothing lands unless the reopen actually
+      // restored focus. The seeded text is gone by then because the hide
+      // cleared it. Both criteria, one image.
+      await sleep(700);
+      await invoke("hide_overlay");
+      await sleep(400);
+      await invoke("shoot_show_overlay");
+      await sleep(400);
+      document.execCommand("insertText", false, input.typed);
     })().catch((err) => console.error("shoot hook failed:", err));
   }, []);
 
@@ -393,123 +485,108 @@ function App() {
         ? parseDateTimeEntry(fieldText)
         : null;
 
-  if (editing) {
-    return (
-      <main className="overlay">
-        <NoteEditor
-          key={editing.path} // remount (fresh draft) when a different note opens
-          note={editing}
-          onSave={(newBody) => void saveEdit(editing, newBody)}
-          onClose={() => setEditing(null)} // Esc: discard draft, back to capture
-        />
-      </main>
-    );
-  }
-
-  if (view === "tasks") {
-    return (
-      <main className="overlay">
-        <TasksView onClose={() => setView("capture")} />
-      </main>
-    );
-  }
-
-  if (view === "search") {
-    return (
-      <main className="overlay">
-        <SearchView onClose={() => setView("capture")} />
-      </main>
-    );
-  }
-
-  if (view === "chat") {
-    return (
-      <main className="overlay">
-        <ChatView
-          turns={chatTurns}
-          setTurns={setChatTurns}
-          session={chatSession}
-          setSession={setChatSession}
-          onClose={() => setView("capture")} // transcript survives in App state
-        />
-      </main>
-    );
-  }
+  // One <main> for every view, rather than a `<main>` per early return: it is
+  // the element whose height drives the window, the element the appear
+  // animation runs on, and it must survive a view switch for either to work.
+  const content = editing ? (
+    <NoteEditor
+      key={editing.path} // remount (fresh draft) when a different note opens
+      note={editing}
+      onSave={(newBody) => void saveEdit(editing, newBody)}
+      onClose={() => setEditing(null)} // Esc: discard draft, back to capture
+    />
+  ) : view === "tasks" ? (
+    <TasksView onClose={() => setView("capture")} />
+  ) : view === "search" ? (
+    <SearchView onClose={() => setView("capture")} />
+  ) : view === "chat" ? (
+    <ChatView
+      turns={chatTurns}
+      setTurns={setChatTurns}
+      session={chatSession}
+      setSession={setChatSession}
+      onClose={() => setView("capture")} // transcript survives in App state
+    />
+  ) : (
+    <div className="capture">
+      {(mode !== "plain" || alertAt) && (
+        <div className="chips">
+          {mode !== "plain" && <span className={`chip chip-kind chip-${mode}`}>{mode}</span>}
+          {deadline &&
+            (deadline.iso ? (
+              <span className="chip">deadline {deadline.iso}</span>
+            ) : (
+              <span className="chip chip-invalid">deadline "{deadline.raw}" unparsed</span>
+            ))}
+          {alertAt &&
+            (alertAt.iso ? (
+              <span className="chip">alert {alertAt.iso}</span>
+            ) : (
+              <span className="chip chip-invalid">alert "{alertAt.raw}" unparsed</span>
+            ))}
+          {category && <span className="chip">#{category}</span>}
+          {fields.length > 0 && !editingField && !fieldMenuOpen && (
+            <span className="chip-hint">/ for {fields.map((f) => f.label).join(" · ")}</span>
+          )}
+        </div>
+      )}
+      <textarea
+        ref={textareaRef}
+        className="overlay-input"
+        placeholder={
+          mode === "plain"
+            ? "Type a note… (markdown, Enter to save, / for commands)"
+            : `Describe the ${mode}… (Enter to save, Esc to cancel)`
+        }
+        value={body}
+        onChange={(e) => {
+          setBody(e.target.value);
+          setPaletteIndex(0); // typing re-filters: selection back to top
+        }}
+        onKeyDown={onBodyKeyDown}
+        autoFocus
+        spellCheck={false}
+        // One row is the floor, not the size: the effect above sets the
+        // element's height from its content on every change.
+        rows={1}
+      />
+      {paletteOpen && (
+        <CommandPalette items={paletteItems} selectedId={paletteSelected?.id ?? null} />
+      )}
+      {fieldMenuOpen && (
+        <CommandPalette items={fields} selectedId={fieldSelected?.id ?? null} />
+      )}
+      {editingField && (
+        <div className="field-editor">
+          <span className="field-label">{editingField}</span>
+          <input
+            className="field-input"
+            value={fieldText}
+            onChange={(e) => setFieldText(e.target.value)}
+            onKeyDown={onFieldKeyDown}
+            placeholder={
+              editingField === "deadline"
+                ? "fri · 2026-09-03 · +3d"
+                : editingField === "alert"
+                  ? "fri 9am · tomorrow 14:30 · 18:00"
+                  : "tag name"
+            }
+            autoFocus
+            spellCheck={false}
+          />
+          {editingField !== "category" && fieldText.trim() !== "" && (
+            <span className={fieldParsed ? "field-parse" : "field-parse field-parse-bad"}>
+              {fieldParsed ? `${fieldText.trim()} → ${fieldParsed}` : "unparsed"}
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
 
   return (
-    <main className="overlay">
-      <div className="capture">
-        {(mode !== "plain" || alertAt) && (
-          <div className="chips">
-            {mode !== "plain" && <span className={`chip chip-kind chip-${mode}`}>{mode}</span>}
-            {deadline &&
-              (deadline.iso ? (
-                <span className="chip">deadline {deadline.iso}</span>
-              ) : (
-                <span className="chip chip-invalid">deadline "{deadline.raw}" unparsed</span>
-              ))}
-            {alertAt &&
-              (alertAt.iso ? (
-                <span className="chip">alert {alertAt.iso}</span>
-              ) : (
-                <span className="chip chip-invalid">alert "{alertAt.raw}" unparsed</span>
-              ))}
-            {category && <span className="chip">#{category}</span>}
-            {fields.length > 0 && !editingField && !fieldMenuOpen && (
-              <span className="chip-hint">/ for {fields.map((f) => f.label).join(" · ")}</span>
-            )}
-          </div>
-        )}
-        <textarea
-          ref={textareaRef}
-          className="overlay-input"
-          placeholder={
-            mode === "plain"
-              ? "Type a note… (markdown, Enter to save, / for commands)"
-              : `Describe the ${mode}… (Enter to save, Esc to cancel)`
-          }
-          value={body}
-          onChange={(e) => {
-            setBody(e.target.value);
-            setPaletteIndex(0); // typing re-filters: selection back to top
-          }}
-          onKeyDown={onBodyKeyDown}
-          autoFocus
-          spellCheck={false}
-          rows={3}
-        />
-        {paletteOpen && (
-          <CommandPalette items={paletteItems} selectedId={paletteSelected?.id ?? null} />
-        )}
-        {fieldMenuOpen && (
-          <CommandPalette items={fields} selectedId={fieldSelected?.id ?? null} />
-        )}
-        {editingField && (
-          <div className="field-editor">
-            <span className="field-label">{editingField}</span>
-            <input
-              className="field-input"
-              value={fieldText}
-              onChange={(e) => setFieldText(e.target.value)}
-              onKeyDown={onFieldKeyDown}
-              placeholder={
-                editingField === "deadline"
-                  ? "fri · 2026-09-03 · +3d"
-                  : editingField === "alert"
-                    ? "fri 9am · tomorrow 14:30 · 18:00"
-                    : "tag name"
-              }
-              autoFocus
-              spellCheck={false}
-            />
-            {editingField !== "category" && fieldText.trim() !== "" && (
-              <span className={fieldParsed ? "field-parse" : "field-parse field-parse-bad"}>
-                {fieldParsed ? `${fieldText.trim()} → ${fieldParsed}` : "unparsed"}
-              </span>
-            )}
-          </div>
-        )}
-      </div>
+    <main ref={overlayRef} className="overlay overlay-motion">
+      {content}
     </main>
   );
 }
