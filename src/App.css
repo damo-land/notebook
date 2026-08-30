@@ -431,3 +431,31 @@ body {
   border-top: 1px solid var(--hairline);
   margin-top: 4px;
 }
+
+/* --- T2 inline slash menu -------------------------------------------------
+   The inline "/" action menu reuses .palette, rendered attached directly
+   under the capture input (same hairline language as the command palette).
+   Only the click affordance is new. */
+.palette-item-clickable {
+  cursor: pointer;
+}
+
+/* --- T2 task done affordance ----------------------------------------------
+   Empty ring at each task row's left; clicking it marks the task done via
+   the same code path as Space. Hairline ring at low alpha, no fill — it
+   brightens on hover and on the selected row. */
+.task-done-ring {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+}
+
+.task-done-ring:hover,
+.task-row-selected .task-done-ring {
+  border-color: rgba(255, 255, 255, 0.55);
+}

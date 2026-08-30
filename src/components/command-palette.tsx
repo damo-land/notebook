@@ -14,9 +14,12 @@ interface CommandPaletteProps {
   items: CommandItem[];
   /** id of the selected item (disabled items are never selected). */
   selectedId: string | null;
+  /** Click-to-apply (T2 inline menu). Fired on mousedown so the input above
+   *  never loses focus; omitted → rows are display-only as before. */
+  onSelect?: (id: string) => void;
 }
 
-export function CommandPalette({ items, selectedId }: CommandPaletteProps) {
+export function CommandPalette({ items, selectedId, onSelect }: CommandPaletteProps) {
   if (items.length === 0) {
     return <div className="palette palette-empty">no matching command</div>;
   }
@@ -31,7 +34,16 @@ export function CommandPalette({ items, selectedId }: CommandPaletteProps) {
           className={
             "palette-item" +
             (item.id === selectedId ? " palette-item-selected" : "") +
-            (item.disabled ? " palette-item-disabled" : "")
+            (item.disabled ? " palette-item-disabled" : "") +
+            (onSelect && !item.disabled ? " palette-item-clickable" : "")
+          }
+          onMouseDown={
+            onSelect && !item.disabled
+              ? (e) => {
+                  e.preventDefault(); // keep focus in the capture input
+                  onSelect(item.id);
+                }
+              : undefined
           }
         >
           <span className="palette-label">/{item.label}</span>
