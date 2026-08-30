@@ -5,7 +5,8 @@
 // optimistically, since the watcher reindexes within ~1s anyway); clicking
 // the empty ring at a row's left does the same via the same code path (T2,
 // Space kept but made discoverable); Enter opens
-// the note in the T7 editor; Tab / Shift+Tab cycle the category filter
+// the note in the T7 editor; ⌘⌫ deletes the selected note (to the macOS
+// Trash); Tab / Shift+Tab cycle the category filter
 // (tags present on open tasks + "all", persisted in localStorage); Esc goes
 // back to the capture view (overlay stays up); Ctrl+W hides the overlay.
 //
@@ -14,7 +15,7 @@
 // category filtering are client-side via src/lib/task-list.ts.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { listTasks, type IndexedNote } from "../lib/index-api";
+import { deleteNote, isDeleteChord, listTasks, type IndexedNote } from "../lib/index-api";
 import { getVaultDir, updateNote } from "../lib/vault";
 import { homeDir, tauriVaultFs } from "../lib/vault-fs";
 import { openNote } from "../lib/note-editor-bus";
@@ -120,6 +121,22 @@ export function TasksView({ onClose }: TasksViewProps) {
     }
   }, []);
 
+  /** ⌘⌫: delete the selected task's note — file to the macOS Trash, row out
+   *  of the index (T4). Same optimistic-removal shape as markDone; shares its
+   *  in-flight guard so delete and done can't race on one row. */
+  const deleteSelected = useCallback(async (task: IndexedNote) => {
+    if (togglingRef.current) return;
+    togglingRef.current = true;
+    try {
+      await deleteNote(task.id);
+      setTasks((prev) => prev.filter((t) => t.id !== task.id));
+    } catch (err) {
+      console.error("delete note failed:", err);
+    } finally {
+      togglingRef.current = false;
+    }
+  }, []);
+
   const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
@@ -140,6 +157,11 @@ export function TasksView({ onClose }: TasksViewProps) {
     if (event.key === "Enter") {
       event.preventDefault();
       if (selectedTask) openNote(selectedTask.id); // T7 editor overlays; Esc returns here
+      return;
+    }
+    if (isDeleteChord(event)) {
+      event.preventDefault();
+      if (selectedTask) void deleteSelected(selectedTask);
       return;
     }
     if (event.key === "Tab") {

@@ -10,6 +10,7 @@ import {
   type Note,
   type NoteKind,
 } from "./lib/vault";
+import { deleteNote } from "./lib/index-api";
 import { homeDir, tauriVaultFs } from "./lib/vault-fs";
 import { parseDateEntry, parseDateTimeEntry } from "./lib/date-entry";
 import { inlineQuery, matchActions, removeQuery } from "./lib/inline-slash";
@@ -354,6 +355,24 @@ function App() {
     []
   );
 
+  /** ⌘⌫ in the editor: move the note to the macOS Trash (delete_note command,
+   *  which also drops the index row), then close the editor — `editing` is
+   *  rendered OVER whatever view was active, so clearing it drops back to
+   *  that view (search/tasks/capture), same as Esc. No confirmation dialog:
+   *  the Trash is the undo. */
+  const deleteEditing = useCallback(async (note: Note) => {
+    if (savingRef.current) return; // not while a save is in flight
+    savingRef.current = true;
+    try {
+      await deleteNote(note.id);
+      setEditing(null); // back to the previous view, overlay stays up
+    } catch (err) {
+      console.error("delete note failed:", err);
+    } finally {
+      savingRef.current = false;
+    }
+  }, []);
+
   const enterMode = (next: Mode) => {
     setMode(next);
     setBody(""); // the "/command" text was palette input, not note body
@@ -556,6 +575,7 @@ function App() {
       note={editing}
       onSave={(newBody) => void saveEdit(editing, newBody)}
       onClose={() => setEditing(null)} // Esc: discard draft, back to capture
+      onDelete={() => void deleteEditing(editing)} // ⌘⌫: to the Trash, back
     />
   ) : view === "tasks" ? (
     <TasksView onClose={() => setView("capture")} />
