@@ -23,6 +23,32 @@
 # Because the panel is shown *after* the view has painted, "the panel is on
 # screen" is a true readiness signal rather than a guess.
 #
+# Putting content in the shot
+# ---------------------------
+# The same Accessibility restriction means the harness cannot type either, so
+# an empty overlay is all it could otherwise capture. Two more variables drive
+# the content through the same hook (`shoot_input` in src-tauri/src/lib.rs):
+#
+#   SHOOT_TEXT   text placed in the capture input at mount. Use "\n" for a
+#                newline. This is how the height-follows-content shots are
+#                taken — the window is sized from the rendered content.
+#   SHOOT_TYPE   text "typed" after the panel has been dismissed and reopened.
+#                Setting it makes the frontend hide the panel, show it again,
+#                and then insert this text at the caret of whatever holds DOM
+#                focus. Nothing lands unless focus really did come back on the
+#                reopen, so the PNG is the proof — and any SHOOT_TEXT seeded
+#                beforehand is gone from it, because dismissal clears state.
+#                Give the run a longer SHOOT_SETTLE (say 5) so the capture
+#                happens after the cycle rather than during it.
+#   SHOOT_LABEL  basename for the PNG and dev log, so repeated runs of one view
+#                with different text do not overwrite each other.
+#
+# Example — the overlay at three lines, and the reopen-focus proof:
+#
+#   SHOOT_TEXT='one\ntwo\nthree' SHOOT_LABEL=height-3 scripts/shoot.sh capture
+#   SHOOT_TEXT='draft' SHOOT_TYPE='typed after reopen' SHOOT_SETTLE=5 \
+#     SHOOT_LABEL=reopen-focus scripts/shoot.sh capture
+#
 # Which vault the shot shows
 # ---------------------------
 # Never the user's own. Each run seeds a small fixture vault and points the app
@@ -384,6 +410,8 @@ launch_app() {
   (
     cd "$REPO_ROOT"
     NOTEBOOK_SHOOT_VIEW="$view" \
+      NOTEBOOK_SHOOT_TEXT="${SHOOT_TEXT:-}" \
+      NOTEBOOK_SHOOT_TYPE="${SHOOT_TYPE:-}" \
       NOTEBOOK_VAULT_DIR="$FIXTURE_VAULT" \
       exec npm run tauri dev
   ) </dev/null >"$log_file" 2>&1 &
@@ -436,8 +464,11 @@ capture_panel() {
 # attempt tears its app down before the next one starts.
 shoot_view() {
   local view="$1"
-  local png="$OUT_DIR/$view.png"
-  local log_file="$OUT_DIR/$view.dev.log"
+  # SHOOT_LABEL names the output, so several runs of the same view — different
+  # SHOOT_TEXT, say — do not overwrite each other's PNG.
+  local name="${SHOOT_LABEL:-$view}"
+  local png="$OUT_DIR/$name.png"
+  local log_file="$OUT_DIR/$name.dev.log"
   local attempt
 
   rm -f "$png"
