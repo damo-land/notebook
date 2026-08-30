@@ -208,9 +208,50 @@ mkdir -p "$OUT_DIR"
 # earlier one. Note the `enriched:` marker on the knowledge note: without it the
 # app queues a background enrichment job for it on launch, which is a real
 # (billable) model call. Fixture notes must never trigger one.
+#
+# That rebuild is an `rm -rf` on a path the caller controls through
+# SHOOT_VAULT_DIR, so it is guarded: the script only deletes a directory it can
+# prove it created itself, identified by the marker file below. Point
+# SHOOT_VAULT_DIR at a real vault and the run stops with nothing removed.
+# A dotfile so `ls | wc -l` still counts notes, and so it cannot be mistaken
+# for one (the indexer only reads *.md).
+FIXTURE_MARKER=".notebook-shoot-fixture"
+
+# Exits non-zero unless $FIXTURE_VAULT is safe to delete: absent, empty, or
+# carrying our marker. Anything else is someone's real directory.
+assert_fixture_vault_is_ours() {
+  [ -e "$FIXTURE_VAULT" ] || return 0
+
+  if [ ! -d "$FIXTURE_VAULT" ]; then
+    echo "shoot: SHOOT_VAULT_DIR ($FIXTURE_VAULT) exists but is not a directory." >&2
+    echo "       Refusing to delete it." >&2
+    exit 1
+  fi
+  [ ! -f "$FIXTURE_VAULT/$FIXTURE_MARKER" ] || return 0
+  # No marker: only an empty directory is safe to take over.
+  [ -z "$(ls -A "$FIXTURE_VAULT" 2>/dev/null)" ] || {
+    cat >&2 <<EOF
+shoot: refusing to delete $FIXTURE_VAULT
+
+  This run would wipe that directory and reseed it with fixture notes, but it
+  has contents and no $FIXTURE_MARKER marker — so this script did not create
+  it, and it may be a real vault.
+
+  Point SHOOT_VAULT_DIR at a path this script owns (it writes the marker into
+  every vault it seeds), or leave SHOOT_VAULT_DIR unset to use the default
+  under the gitignored output directory. If you really do want this directory
+  gone, delete it yourself first.
+EOF
+    exit 1
+  }
+}
+
 seed_fixture_vault() {
+  assert_fixture_vault_is_ours
   rm -rf "$FIXTURE_VAULT"
   mkdir -p "$FIXTURE_VAULT"
+  # Written first: from here on this directory is provably ours to rebuild.
+  : >"$FIXTURE_VAULT/$FIXTURE_MARKER"
 
   cat >"$FIXTURE_VAULT/20260101-090000-fixture-espresso.md" <<'EOF'
 ---
