@@ -63,6 +63,18 @@ body {
   color: var(--text-primary);
 }
 
+/* Rounded corners, web half. The native vibrancy material is rounded at 12pt
+   (apply_vibrancy's radius parameter in src-tauri/src/lib.rs) and this clips
+   the web content to the same shape, so neither layer shows square where the
+   other is round. The window's height tracks the content height (the
+   resize_overlay clamp), so #root's corners coincide with the window's —
+   except past the max-height clamp, where the page scrolls and the bottom
+   corners are owned by the material alone. */
+#root {
+  border-radius: 12px;
+  overflow: clip;
+}
+
 .overlay {
   display: flex;
   padding: 6px 8px;
