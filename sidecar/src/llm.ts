@@ -130,8 +130,23 @@ function stripApiKey(): void {
   }
 }
 
-const AUTH_ERROR_PATTERN =
+export const AUTH_ERROR_PATTERN =
   /auth|login|logged in|credential|api key|x-api-key|setup-token|oauth|token expired|401/i;
+
+/**
+ * Runs every raw failure from the LLM call chain through the auth heuristic:
+ * anything credential-shaped becomes a typed NotAuthenticatedError (whose
+ * stable "Not authenticated with Claude Code." message prefix is what the
+ * frontend and the Rust enrich worker discriminate on once main.ts flattens
+ * errors to their message); everything else passes through unchanged. Pure,
+ * so it is unit-testable without a model call (src/llm.test.ts).
+ */
+export function classifyLlmError(err: unknown): Error {
+  if (err instanceof NotAuthenticatedError) return err;
+  const detail = err instanceof Error ? err.message : String(err);
+  if (AUTH_ERROR_PATTERN.test(detail)) return new NotAuthenticatedError(detail);
+  return err instanceof Error ? err : new Error(detail);
+}
 
 /** Prompt -> plain text response. No tools and one turn unless `opts` says otherwise. */
 export async function runPrompt(
@@ -205,10 +220,6 @@ export async function runPrompt(
     }
     throw new Error("LLM call ended without a result message");
   } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    if (AUTH_ERROR_PATTERN.test(detail)) {
-      throw new NotAuthenticatedError(detail);
-    }
-    throw err;
+    throw classifyLlmError(err);
   }
 }

@@ -1109,6 +1109,18 @@ fn spawn_enrich_worker(
                     match (ok, status) {
                         (true, "enriched") => eprintln!("[enrich] {}: enriched: {line}", job.id),
                         (true, _) => eprintln!("[enrich] {}: skipped, note unchanged: {line}", job.id),
+                        // No Claude Code OAuth token: the sidecar's typed
+                        // NotAuthenticatedError, flattened to its stable
+                        // message prefix. One line per queued note; nothing
+                        // was written, so a later configured run enriches it —
+                        // and `dispatched` already stops any retry loop this
+                        // session.
+                        (false, _) if line.contains("Not authenticated with Claude Code") => {
+                            eprintln!(
+                                "[enrich] {}: skipped, LLM not configured (run `claude setup-token`); note left unmarked",
+                                job.id
+                            )
+                        }
                         (false, _) => {
                             eprintln!("[enrich] {}: job failed, note left untouched: {line}", job.id)
                         }
