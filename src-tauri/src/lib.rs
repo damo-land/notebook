@@ -1,6 +1,7 @@
 pub mod alerts;
 pub mod enrich;
 pub mod index;
+pub mod placement;
 
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
