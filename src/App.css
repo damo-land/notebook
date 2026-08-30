@@ -66,6 +66,10 @@ body {
 .overlay {
   display: flex;
   padding: 6px 8px;
+  /* Mirror of OVERLAY_MIN_HEIGHT (src-tauri/src/lib.rs): the window never
+     goes below 96pt, so the content owns that floor too — otherwise a slim
+     capture view top-hugs the panel and leaves dead material underneath. */
+  min-height: 96px;
 }
 
 /* --- Overlay motion (T3) ----------------------------------------------------
@@ -117,6 +121,9 @@ body {
 .capture {
   display: flex;
   flex-direction: column;
+  /* Centers the lone input inside the 96pt window floor; once the palette,
+     chips or a grown draft push past it, centering is a no-op. */
+  justify-content: center;
   width: 100%;
 }
 
