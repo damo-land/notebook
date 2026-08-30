@@ -12,6 +12,7 @@ import {
 } from "./lib/vault";
 import { homeDir, tauriVaultFs } from "./lib/vault-fs";
 import { parseDateEntry, parseDateTimeEntry } from "./lib/date-entry";
+import { inlineQuery, matchActions, removeQuery } from "./lib/inline-slash";
 import { onOpenNote } from "./lib/note-editor-bus";
 import {
   dismissOverlay,
@@ -51,11 +52,15 @@ const TASK_FIELDS: CommandItem[] = [
   { id: "category", label: "category", hint: "single tag" },
   ALERT_FIELD,
 ];
-const PLAIN_FIELDS: CommandItem[] = [ALERT_FIELD];
+// Inline "/" action menu (T2), per mode: task capture offers its fields;
+// plain capture offers the mode/view commands plus alert, so the palette's
+// commands are reachable mid-line too. Knowledge mode has no actions in v1,
+// so a "/" typed there stays literal.
+const PLAIN_INLINE: CommandItem[] = [...COMMANDS, ALERT_FIELD];
 
-function fieldsForMode(mode: Mode): CommandItem[] {
+function inlineActionsForMode(mode: Mode): CommandItem[] {
   if (mode === "task") return TASK_FIELDS;
-  if (mode === "plain") return PLAIN_FIELDS;
+  if (mode === "plain") return PLAIN_INLINE;
   return [];
 }
 
@@ -75,8 +80,11 @@ function App() {
   const [mode, setMode] = useState<Mode>("plain");
   const [body, setBody] = useState("");
   const [paletteIndex, setPaletteIndex] = useState(0);
-  const [fieldMenuOpen, setFieldMenuOpen] = useState(false);
-  const [fieldMenuIndex, setFieldMenuIndex] = useState(0);
+  // Inline "/" menu (T2): `pos` is where the "/" was typed, `caret` tracks
+  // the end of the query. Open-ness is DERIVED below (inlineOpen), so a query
+  // that matches nothing hides the menu without extra state.
+  const [inlineMenu, setInlineMenu] = useState<{ pos: number; caret: number } | null>(null);
+  const [inlineIndex, setInlineIndex] = useState(0);
   const [editingField, setEditingField] = useState<FieldId | null>(null);
   const [fieldText, setFieldText] = useState("");
   const [deadline, setDeadline] = useState<{ raw: string; iso: string | null } | null>(null);
@@ -121,8 +129,17 @@ function App() {
   const paletteSelectable = paletteItems.filter((c) => !c.disabled);
   const paletteSelected =
     paletteSelectable[Math.min(paletteIndex, Math.max(paletteSelectable.length - 1, 0))] ?? null;
-  const fields = fieldsForMode(mode);
-  const fieldSelected = fields[fieldMenuIndex] ?? null;
+  // Inline menu derived state: query between the typed "/" and the caret,
+  // prefix-matched against this mode's actions. No match → menu hidden, text
+  // literal; a broken query (whitespace, "/" deleted) cleared the state in
+  // syncInlineMenu below.
+  const inlineActions = inlineActionsForMode(mode);
+  const inlineQ = inlineMenu ? inlineQuery(body, inlineMenu.pos, inlineMenu.caret) : null;
+  const inlineItems = inlineQ !== null ? matchActions(inlineActions, inlineQ) : [];
+  const inlineOpen = inlineItems.length > 0;
+  const inlineSelected = inlineOpen
+    ? (inlineItems[Math.min(inlineIndex, inlineItems.length - 1)] ?? null)
+    : null;
 
   // Resolve the vault dir once at startup.
   useEffect(() => {
@@ -147,8 +164,8 @@ function App() {
   /** Back to plain capture: mode + collected fields discarded, body kept. */
   const resetToPlain = useCallback(() => {
     setMode("plain");
-    setFieldMenuOpen(false);
-    setFieldMenuIndex(0);
+    setInlineMenu(null);
+    setInlineIndex(0);
     setEditingField(null);
     setFieldText("");
     setDeadline(null);
@@ -196,7 +213,7 @@ function App() {
     if (!el) return;
     el.style.height = "auto";
     el.style.height = `${el.scrollHeight}px`;
-  }, [body, editingField, fieldMenuOpen, view, editing]);
+  }, [body, editingField, inlineOpen, view, editing]);
 
   const save = useCallback(
     async (
@@ -302,7 +319,16 @@ function App() {
       await sleep(400);
       await invoke("shoot_show_overlay");
       await sleep(400);
-      document.execCommand("insertText", false, input.typed);
+      // Typed per character, with a keydown dispatched ahead of each insert:
+      // keydown-triggered UI (the T2 inline "/" menu) only exists for TYPED
+      // text, so a bulk insertText would stage none of it. React's root
+      // listener picks the synthetic keydown up like a real one.
+      for (const ch of input.typed) {
+        document.activeElement?.dispatchEvent(
+          new KeyboardEvent("keydown", { key: ch, bubbles: true, cancelable: true })
+        );
+        document.execCommand("insertText", false, ch);
+      }
     })().catch((err) => console.error("shoot hook failed:", err));
   }, []);
 
@@ -349,6 +375,43 @@ function App() {
     enterMode(id as Mode);
   };
 
+  /** Keep the inline menu's caret in step with the textarea, and drop the
+   *  menu when the query breaks: whitespace typed into it, the "/" deleted,
+   *  the caret (or a selection) leaving the span. Runs on change and on
+   *  caret moves; the first event after the "/" keydown still sees the old
+   *  (null) state and no-ops — the keydown already stored caret = pos + 1. */
+  const syncInlineMenu = (el: HTMLTextAreaElement) => {
+    if (!inlineMenu) return;
+    const caret = el.selectionStart ?? 0;
+    if (el.selectionEnd !== caret || inlineQuery(el.value, inlineMenu.pos, caret) === null) {
+      setInlineMenu(null);
+    } else if (caret !== inlineMenu.caret) {
+      setInlineMenu({ pos: inlineMenu.pos, caret });
+    }
+  };
+
+  /** Enter/click on an inline menu row: remove the "/query" span from the
+   *  body, then run the action — task fields open their existing editor;
+   *  plain-mode commands switch mode or view with the body KEPT (unlike the
+   *  top-of-input palette, whose whole line is palette input). */
+  const applyInlineAction = (id: string) => {
+    if (!inlineMenu) return;
+    setBody(removeQuery(body, inlineMenu.pos, inlineMenu.caret));
+    setInlineMenu(null);
+    setInlineIndex(0);
+    if (id === "deadline" || id === "category" || id === "alert") {
+      setEditingField(id);
+      setFieldText("");
+      return;
+    }
+    if (id === "task" || id === "knowledge") {
+      setMode(id);
+      textareaRef.current?.focus();
+      return;
+    }
+    if (id === "search" || id === "chat") setView(id);
+  };
+
   const onBodyKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // 1. Palette navigation (plain capture, menu open).
     if (paletteOpen) {
@@ -376,32 +439,33 @@ function App() {
       return;
     }
 
-    // 2. In-mode field selector navigation.
-    if (fieldMenuOpen) {
+    // 2. Inline "/" action menu navigation (T2). inlineOpen is derived, so
+    // this only runs while the query matches at least one action. Esc closes
+    // ONLY the menu — the typed "/query" text stays as-is. Shift+Enter falls
+    // through to insert its newline, which breaks the query and closes the
+    // menu via syncInlineMenu. Every other key falls through too, so typing
+    // keeps filtering.
+    if (inlineOpen) {
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
-        const n = fields.length;
-        if (n > 0) {
-          setFieldMenuIndex((i) => (event.key === "ArrowDown" ? (i + 1) % n : (i - 1 + n) % n));
-        }
+        const n = inlineItems.length;
+        setInlineIndex((i) => {
+          const cur = Math.min(i, n - 1);
+          return event.key === "ArrowDown" ? (cur + 1) % n : (cur - 1 + n) % n;
+        });
         return;
       }
-      if (event.key === "Enter") {
+      if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
-        if (fieldSelected) {
-          setEditingField(fieldSelected.id as FieldId);
-          setFieldText("");
-        }
-        setFieldMenuOpen(false);
+        if (inlineSelected) applyInlineAction(inlineSelected.id);
         return;
       }
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
-        setFieldMenuOpen(false);
+        setInlineMenu(null);
         return;
       }
-      return;
     }
 
     // 3. Esc inside a mode: back to plain capture, nothing saved. The overlay
@@ -414,23 +478,21 @@ function App() {
       return;
     }
 
-    // 4. "/" at a line start opens the field selector, in every mode that has
-    // fields (task: deadline/category/alert; plain: alert). ONE exception,
-    // which keeps T2's command palette reachable: in plain mode a "/" typed
-    // into a completely empty input is the COMMAND palette (mode switch), so
-    // the palette owns that single keystroke and every other line-start "/"
-    // opens the field selector.
-    if (event.key === "/" && fields.length > 0) {
-      const el = event.currentTarget;
-      const pos = el.selectionStart;
-      const atLineStart = el.selectionEnd === pos && (pos === 0 || body[pos - 1] === "\n");
+    // 4. "/" TYPED opens the inline action menu at ANY caret position (T2) —
+    // this is a keydown handler, and pasting fires no keydown, so a pasted
+    // URL never lands here. The "/" is NOT swallowed: it is inserted and
+    // stays visible, the growing query filters the menu, and if nothing
+    // matches the text is simply literal. ONE exception, kept for muscle
+    // memory: in plain mode a "/" typed into a completely empty input is the
+    // top-of-input COMMAND palette (block 1), exactly as before.
+    if (event.key === "/" && !event.metaKey && !event.ctrlKey && !event.altKey) {
       const opensCommandPalette = mode === "plain" && body === "";
-      if (atLineStart && !opensCommandPalette) {
-        event.preventDefault();
-        setFieldMenuOpen(true);
-        setFieldMenuIndex(0);
-        return;
+      if (inlineActions.length > 0 && !opensCommandPalette) {
+        const pos = event.currentTarget.selectionStart;
+        setInlineMenu({ pos, caret: pos + 1 });
+        setInlineIndex(0);
       }
+      // no return: the keystroke falls through and inserts the "/"
     }
 
     // 5. Enter saves; Shift+Enter falls through to insert a newline.
@@ -535,7 +597,10 @@ function App() {
         onChange={(e) => {
           setBody(e.target.value);
           setPaletteIndex(0); // typing re-filters: selection back to top
+          setInlineIndex(0);
+          syncInlineMenu(e.target);
         }}
+        onSelect={(e) => syncInlineMenu(e.currentTarget)}
         onKeyDown={onBodyKeyDown}
         autoFocus
         spellCheck={false}
@@ -546,8 +611,12 @@ function App() {
       {paletteOpen && (
         <CommandPalette items={paletteItems} selectedId={paletteSelected?.id ?? null} />
       )}
-      {fieldMenuOpen && (
-        <CommandPalette items={fields} selectedId={fieldSelected?.id ?? null} />
+      {inlineOpen && (
+        <CommandPalette
+          items={inlineItems}
+          selectedId={inlineSelected?.id ?? null}
+          onSelect={applyInlineAction}
+        />
       )}
       {editingField && (
         <div className="field-editor">

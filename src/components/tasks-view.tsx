@@ -2,7 +2,9 @@
 //
 // Keys: Up/Down move selection; Space marks the selected task done (writes
 // `done: true` to frontmatter via the vault lib — the row is removed
-// optimistically, since the watcher reindexes within ~1s anyway); Enter opens
+// optimistically, since the watcher reindexes within ~1s anyway); clicking
+// the empty ring at a row's left does the same via the same code path (T2,
+// Space kept but made discoverable); Enter opens
 // the note in the T7 editor; Tab / Shift+Tab cycle the category filter
 // (tags present on open tasks + "all", persisted in localStorage); Esc goes
 // back to the capture view (overlay stays up); Ctrl+W hides the overlay.
@@ -95,7 +97,8 @@ export function TasksView({ onClose }: TasksViewProps) {
     setSelected(0);
   }, []);
 
-  /** Space: mark done on disk (vault lib), drop the row optimistically. */
+  /** Space, or a click on a row's ring: mark done on disk (vault lib), drop
+   *  the row optimistically. */
   const markDone = useCallback(async (task: IndexedNote) => {
     if (togglingRef.current) return;
     togglingRef.current = true;
@@ -190,6 +193,15 @@ export function TasksView({ onClose }: TasksViewProps) {
                 "task-row" + (task.id === selectedTask?.id ? " task-row-selected" : "")
               }
             >
+              <button
+                type="button"
+                className="task-done-ring"
+                aria-label={`mark "${task.title || task.id}" done`}
+                // mousedown default would move focus off the list and break
+                // Space; click still fires. Same code path as Space.
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => void markDone(task)}
+              />
               <span className="task-title">{task.title || task.id}</span>
               {task.tags.map((tag) => (
                 <span key={tag} className="chip task-tag">#{tag}</span>
