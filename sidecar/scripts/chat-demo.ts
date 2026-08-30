@@ -267,7 +267,8 @@ async function ask(
 
 // --- scoping assertions, run against whatever options a turn actually used ----
 
-const WRITE_TOOLS = ["Write", "Edit", "MultiEdit", "StashEdit", "Bash", "WebFetch", "WebSearch"];
+// "NotebookEdit" is a Claude Agent SDK tool name (Jupyter notebook editing), not the old app name.
+const WRITE_TOOLS = ["Write", "Edit", "MultiEdit", "NotebookEdit", "Bash", "WebFetch", "WebSearch"];
 
 function assertScoping(opts: RunPromptOptions, vaultDir: string): void {
   assert(opts.cwd === vaultDir, "session cwd is the vault dir");
