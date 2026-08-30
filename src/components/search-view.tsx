@@ -68,6 +68,13 @@ export function SearchView({ onClose }: SearchViewProps) {
 
   const selectedNote = results[Math.min(selected, Math.max(results.length - 1, 0))] ?? null;
 
+  // The result list is height-capped and scrolls internally (T4), so
+  // arrow-key selection has to drag its row into view — presentational only.
+  const selectedRowRef = useRef<HTMLLIElement>(null);
+  useEffect(() => {
+    selectedRowRef.current?.scrollIntoView({ block: "nearest" });
+  }, [selectedNote?.id]);
+
   const onKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault(); // don't let the caret jump in the input
@@ -113,20 +120,21 @@ export function SearchView({ onClose }: SearchViewProps) {
           setSelected(0); // new results: selection back to the top
         }}
         onKeyDown={onKeyDown}
-        placeholder="Search the vault… (body text and tags)"
+        placeholder="Search…"
         autoFocus
         spellCheck={false}
         aria-label="search notes"
       />
       {results.length === 0 ? (
-        <div className="tasks-empty">
+        <div className="tasks-empty under-input">
           {searched ? "no matches" : "type to search"}
         </div>
       ) : (
-        <ul className="tasks-list" role="listbox" aria-label="search results">
+        <ul className="tasks-list under-input" role="listbox" aria-label="search results">
           {results.map((note) => (
             <li
               key={note.id}
+              ref={note.id === selectedNote?.id ? selectedRowRef : undefined}
               role="option"
               aria-selected={note.id === selectedNote?.id}
               className={"task-row" + (note.id === selectedNote?.id ? " task-row-selected" : "")}
@@ -138,9 +146,6 @@ export function SearchView({ onClose }: SearchViewProps) {
           ))}
         </ul>
       )}
-      <div className="tasks-hint tasks-footer">
-        ↑↓ select · Enter open · Esc back · Ctrl+W hide
-      </div>
     </div>
   );
 }

@@ -58,11 +58,10 @@ export function NoteEditor({ note, onSave, onClose }: NoteEditorProps) {
           </span>
         ))}
         {fm.kind === "task" && <span className="chip">{fm.done ? "done" : "open"}</span>}
-        <span className="chip-hint">editing · Enter/Cmd+S save · Esc cancel</span>
       </div>
       <textarea
         ref={textareaRef}
-        className="overlay-input"
+        className="overlay-input editor-input"
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         onKeyDown={onKeyDown}

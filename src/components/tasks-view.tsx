@@ -81,6 +81,14 @@ export function TasksView({ onClose }: TasksViewProps) {
   const visible = useMemo(() => filterByCategory(tasks, category), [tasks, category]);
   const selectedTask = visible[Math.min(selected, Math.max(visible.length - 1, 0))] ?? null;
 
+  // The list is height-capped and scrolls internally (T4), so arrow-key
+  // selection has to drag its row into view — presentational only, the
+  // selection logic above is untouched.
+  const selectedRowRef = useRef<HTMLLIElement>(null);
+  useEffect(() => {
+    selectedRowRef.current?.scrollIntoView({ block: "nearest" });
+  }, [selectedTask?.id]);
+
   const setAndStoreCategory = useCallback((next: string) => {
     setCategory(next);
     storeCategory(next);
@@ -164,20 +172,18 @@ export function TasksView({ onClose }: TasksViewProps) {
     >
       <div className="tasks-header">
         <span className="tasks-title">tasks</span>
-        <span className="tasks-filter">
-          #{category}
-          <span className="tasks-hint"> (Tab cycles)</span>
-        </span>
+        <span className="tasks-filter">#{category}</span>
       </div>
       {visible.length === 0 ? (
-        <div className="tasks-empty">
+        <div className="tasks-empty under-input">
           {loaded ? "no open tasks" + (category !== ALL_CATEGORIES ? ` in #${category}` : "") : "loading…"}
         </div>
       ) : (
-        <ul className="tasks-list">
+        <ul className="tasks-list under-input">
           {visible.map((task) => (
             <li
               key={task.id}
+              ref={task.id === selectedTask?.id ? selectedRowRef : undefined}
               role="option"
               aria-selected={task.id === selectedTask?.id}
               className={
@@ -195,9 +201,6 @@ export function TasksView({ onClose }: TasksViewProps) {
           ))}
         </ul>
       )}
-      <div className="tasks-hint tasks-footer">
-        ↑↓ select · Space done · Enter open · Tab filter · Esc back · Ctrl+W hide
-      </div>
     </div>
   );
 }
