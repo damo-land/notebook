@@ -44,8 +44,9 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT_DIR="${SHOOT_OUT_DIR:-$REPO_ROOT/screenshots}"
 APP_BIN_MATCH='target/debug/notebook'
 VITE_PORT=1420
-# First run in a cold worktree compiles the Rust app; later runs relink only.
-READY_TIMEOUT="${SHOOT_READY_TIMEOUT:-420}"
+# Warm worktree: the app is up in a few seconds. Raise this for the first run
+# in a cold worktree, where cargo compiles the whole dependency tree first.
+READY_TIMEOUT="${SHOOT_READY_TIMEOUT:-180}"
 # Paint + panel fade after the window is on screen.
 SETTLE="${SHOOT_SETTLE:-1.2}"
 
@@ -137,9 +138,16 @@ shoot: no Screen Recording permission for this terminal.
   screencapture cannot produce a window image without it, so this run would
   write nothing (or a black frame). Grant it in
   System Settings -> Privacy & Security -> Screen Recording for the terminal
-  app running this script, restart that app, and re-run.
+  app running this script, fully quit and reopen that app, and re-run.
+
+  Set SHOOT_ALLOW_NO_CAPTURE=1 to run anyway — the app still launches and is
+  still torn down, and the run fails at the capture step instead. That is only
+  useful for exercising the launch/teardown path; it produces no PNG.
 EOF
-  exit 1
+  if [ "${SHOOT_ALLOW_NO_CAPTURE:-}" != "1" ]; then
+    exit 1
+  fi
+  log "SHOOT_ALLOW_NO_CAPTURE=1: continuing without capture permission"
 fi
 
 if [ -n "$(port_pids)" ]; then
@@ -181,7 +189,16 @@ wait_for_panel() {
     fi
     sleep 1
   done
-  echo "shoot: panel did not appear within ${READY_TIMEOUT}s; see $log_file" >&2
+  cat >&2 <<EOF
+shoot: the overlay panel never appeared on screen within ${READY_TIMEOUT}s.
+
+  The app started and the dev log should show "[shoot] showing the overlay
+  panel" — the panel was ordered in but the window server never composited it.
+  Check by hand whether alt+space shows the overlay at all: if it does not,
+  the problem is the app, not this harness.
+
+  Dev log: $log_file
+EOF
   return 1
 }
 
