@@ -38,4 +38,7 @@ tauri-plugin-notification = "2"
 # Real macOS NSVisualEffectView material behind the overlay webview
 # (src-tauri/src/lib.rs, setup): the Spotlight-style blur.
 window-vibrancy = "0.8.0"
+# Move deleted notes to the macOS Trash (recoverable in Finder) instead of
+# unlinking them (T4 delete_note).
+trash = "5"
 

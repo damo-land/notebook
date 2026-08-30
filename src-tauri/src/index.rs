@@ -165,6 +165,25 @@ pub fn reindex(conn: &Connection, vault_dir: &Path) -> Result<usize> {
     Ok(count)
 }
 
+/// The indexed file path for a note id, if the note is indexed.
+pub fn note_path(conn: &Connection, id: &str) -> Result<Option<String>> {
+    use rusqlite::OptionalExtension;
+    conn.query_row("SELECT path FROM notes WHERE id = ?1", [id], |r| r.get(0))
+        .optional()
+}
+
+/// Drops one note's rows from the index (notes, tags, notes_fts). Index-only:
+/// the file on disk is untouched — T4's delete command moves it to the Trash
+/// first, then calls this so lists refresh without waiting for the watcher.
+/// An unknown id is a no-op.
+pub fn remove_note(conn: &Connection, id: &str) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("DELETE FROM notes WHERE id = ?1", [id])?;
+    tx.execute("DELETE FROM tags WHERE note_id = ?1", [id])?;
+    tx.execute("DELETE FROM notes_fts WHERE id = ?1", [id])?;
+    tx.commit()
+}
+
 pub fn note_count(conn: &Connection) -> Result<i64> {
     conn.query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0))
 }
@@ -367,8 +386,60 @@ pub fn spawn_watcher(
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_vault_dir;
+    use super::{open_db, reindex, remove_note, resolve_vault_dir};
     use std::path::PathBuf;
+
+    /// `remove_note` drops exactly one note's rows from all three tables
+    /// (notes, tags, notes_fts) and leaves the other notes — and the files on
+    /// disk — untouched. It is the index half of T4 deletion; moving the file
+    /// to the Trash is the command's job, not this function's.
+    #[test]
+    fn remove_note_drops_all_index_rows_for_that_note_only() {
+        let dir = std::env::temp_dir().join(format!(
+            "notebook-remove-note-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("a.md"),
+            "---\nid: a\nkind: task\ncreated: 2026-08-30T10:00:00\ntags: [work]\n---\nbuy milk\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("b.md"),
+            "---\nid: b\nkind: note\ncreated: 2026-08-30T11:00:00\n---\nkeep me\n",
+        )
+        .unwrap();
+
+        let conn = open_db(&dir.join("index.db")).unwrap();
+        assert_eq!(reindex(&conn, &dir).unwrap(), 2);
+
+        remove_note(&conn, "a").unwrap();
+
+        let ids = |sql: &str| -> Vec<String> {
+            let mut stmt = conn.prepare(sql).unwrap();
+            let rows = stmt
+                .query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            rows
+        };
+        assert_eq!(ids("SELECT id FROM notes ORDER BY id"), vec!["b"]);
+        assert_eq!(ids("SELECT id FROM notes_fts ORDER BY id"), vec!["b"]);
+        assert!(ids("SELECT note_id FROM tags").is_empty());
+        // Index-only: both files are still on disk.
+        assert!(dir.join("a.md").is_file());
+        assert!(dir.join("b.md").is_file());
+
+        // Removing an id that isn't indexed is a no-op, not an error: the
+        // watcher may have already reindexed a deletion away.
+        remove_note(&conn, "ghost").unwrap();
+        assert_eq!(ids("SELECT id FROM notes ORDER BY id"), vec!["b"]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     const OVERRIDE: &str = "NOTEBOOK_VAULT_DIR";
 
