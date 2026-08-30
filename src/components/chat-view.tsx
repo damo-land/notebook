@@ -32,6 +32,19 @@ import { dismissOverlay, useFocusOnOverlayShown } from "../lib/overlay";
 
 export type { ChatTurn };
 
+/**
+ * Stable prefix of the sidecar's NotAuthenticatedError message
+ * (sidecar/src/llm.ts), passed through main.ts and chat_send as the error
+ * string. Matching it here is what turns a raw auth failure into guidance
+ * instead of an error dump (T9 graceful degradation).
+ */
+const NOT_AUTHENTICATED = "Not authenticated with Claude Code";
+
+/** What the transcript shows instead of a raw auth error. */
+const LLM_NOT_CONFIGURED =
+  "The LLM is not configured — run `claude setup-token` in a terminal to " +
+  "connect your Claude account, then try again.";
+
 /** `chat_send` return value (src-tauri/src/lib.rs ChatReply). */
 interface ChatReply {
   text: string;
@@ -115,8 +128,13 @@ export function ChatView({ turns, setTurns, session, setSession, onClose }: Chat
       // before it went searching, which streamed but is not the answer.
       finish(reply.text);
     } catch (err) {
-      console.error("chat failed:", err);
-      finish(`(chat failed: ${String(err)})`);
+      const message = String(err);
+      console.error("chat failed:", message);
+      finish(
+        message.includes(NOT_AUTHENTICATED)
+          ? LLM_NOT_CONFIGURED
+          : `(chat failed: ${message})`,
+      );
     } finally {
       if (activeTurn === turn) activeTurn = null;
     }
