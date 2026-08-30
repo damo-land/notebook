@@ -12,7 +12,12 @@ body,
 
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background: #1e1e1e;
+  /* Transparent so the window's native macOS vibrancy material shows through
+     (src-tauri/src/lib.rs applies NSVisualEffectMaterial::HudWindow). An opaque
+     fill here paints straight over it and the overlay looks exactly as it did
+     before. This one declaration is the only style T2 touches; the visual
+     design — typography, chrome, layout — belongs to T4. */
+  background: transparent;
   color: #f0f0f0;
 }
 
