@@ -342,6 +342,20 @@ body {
   color: var(--text-tertiary);
 }
 
+/* "Launch at login" checkbox — native input, keyboard-first focus ring. */
+.settings-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.settings-check input:focus {
+  outline: 2px solid var(--text-tertiary);
+  outline-offset: 1px;
+}
+
 /* provider status lines (claude auth / ollama reachability) */
 .settings-status {
   display: flex;
