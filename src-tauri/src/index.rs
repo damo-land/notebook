@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS notes (
   title    TEXT NOT NULL,
   done     INTEGER,
   deadline TEXT,
-  alert    TEXT
+  alert    TEXT,
+  modified INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS tags (
   note_id TEXT NOT NULL,
@@ -48,6 +49,21 @@ pub fn open_db(db_path: &Path) -> Result<Connection> {
     }
     let conn = Connection::open(db_path)?;
     conn.execute_batch(SCHEMA)?;
+    // Migration (T5): dbs created before the `modified` column existed pass
+    // the CREATE TABLE IF NOT EXISTS above untouched, so add the column here.
+    // The startup reindex is a full drop-and-rescan, which then fills in real
+    // mtimes over the 0 default.
+    let has_modified: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('notes') WHERE name = 'modified'",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_modified == 0 {
+        conn.execute(
+            "ALTER TABLE notes ADD COLUMN modified INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
     Ok(conn)
 }
 
@@ -135,9 +151,18 @@ pub fn reindex(conn: &Connection, vault_dir: &Path) -> Result<usize> {
             .trim()
             .to_string();
         let done: Option<bool> = data.get("done").map(|v| v == "true");
+        // File mtime in unix millis: the sort key for the all-notes listing.
+        // Integer millis compare correctly with plain ORDER BY; a file whose
+        // mtime cannot be read sorts to the end rather than failing the scan.
+        let modified: i64 = std::fs::metadata(&path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
         tx.execute(
-            "INSERT OR REPLACE INTO notes (id, path, kind, created, title, done, deadline, alert)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT OR REPLACE INTO notes (id, path, kind, created, title, done, deadline, alert, modified)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 id,
                 path.to_string_lossy(),
@@ -147,6 +172,7 @@ pub fn reindex(conn: &Connection, vault_dir: &Path) -> Result<usize> {
                 done,
                 data.get("deadline"),
                 data.get("alert"),
+                modified,
             ],
         )?;
         for tag in tags {
@@ -252,6 +278,21 @@ pub fn search_notes(conn: &Connection, text: &str) -> Result<Vec<NoteRow>> {
     ))?;
     let mut out = Vec::new();
     let mut q = stmt.query(params![fts_query, like])?;
+    while let Some(row) = q.next()? {
+        out.push(row_to_note(conn, row)?);
+    }
+    Ok(out)
+}
+
+/// Every note in the index, most recently modified (file mtime) first.
+/// Serves the search view's empty query (T5): the full vault listing comes
+/// from the index, never from a per-keystroke vault directory scan.
+pub fn list_all_notes(conn: &Connection) -> Result<Vec<NoteRow>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {NOTE_COLS} FROM notes ORDER BY modified DESC, created DESC"
+    ))?;
+    let mut out = Vec::new();
+    let mut q = stmt.query([])?;
     while let Some(row) = q.next()? {
         out.push(row_to_note(conn, row)?);
     }
@@ -386,7 +427,7 @@ pub fn spawn_watcher(
 
 #[cfg(test)]
 mod tests {
-    use super::{open_db, reindex, remove_note, resolve_vault_dir};
+    use super::{list_all_notes, open_db, reindex, remove_note, resolve_vault_dir};
     use std::path::PathBuf;
 
     /// `remove_note` drops exactly one note's rows from all three tables
@@ -437,6 +478,65 @@ mod tests {
         // watcher may have already reindexed a deletion away.
         remove_note(&conn, "ghost").unwrap();
         assert_eq!(ids("SELECT id FROM notes ORDER BY id"), vec!["b"]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The empty-search listing: every note, newest file mtime first (T5).
+    /// mtimes are made distinct by writing the files in order with a pause —
+    /// no dep on a set-mtime crate; APFS mtime resolution is far finer than
+    /// the 25ms gap.
+    #[test]
+    fn list_all_notes_orders_by_mtime_desc() {
+        let dir = scratch_home("list-all");
+        let vault = dir.join("vault");
+        std::fs::create_dir_all(&vault).unwrap();
+        for name in ["first", "second", "third"] {
+            std::fs::write(
+                vault.join(format!("{name}.md")),
+                format!("---\nkind: note\ncreated: 2026-01-01T00:00:00Z\n---\n{name} body\n"),
+            )
+            .unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        // Rewrite `first` so its mtime becomes the newest: the expected order
+        // (first, third, second) then differs from both write order and the
+        // identical `created` values — only an mtime sort produces it.
+        std::fs::write(
+            vault.join("first.md"),
+            "---\nkind: note\ncreated: 2026-01-01T00:00:00Z\n---\nfirst body updated\n",
+        )
+        .unwrap();
+
+        let conn = open_db(&dir.join("index.db")).unwrap();
+        assert_eq!(reindex(&conn, &vault).unwrap(), 3);
+        let notes = list_all_notes(&conn).unwrap();
+        let ids: Vec<&str> = notes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(ids, ["first", "third", "second"]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A db created before the `modified` column existed still opens: open_db
+    /// must add the column so the all-notes query never hits "no such column".
+    #[test]
+    fn open_db_migrates_pre_modified_schema() {
+        let dir = scratch_home("migrate");
+        let db_path = dir.join("index.db");
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE notes (
+                   id TEXT PRIMARY KEY, path TEXT NOT NULL, kind TEXT NOT NULL,
+                   created TEXT NOT NULL, title TEXT NOT NULL,
+                   done INTEGER, deadline TEXT, alert TEXT
+                 );",
+            )
+            .unwrap();
+        }
+        let conn = open_db(&db_path).unwrap();
+        // The column exists and the all-notes query runs.
+        assert!(list_all_notes(&conn).unwrap().is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

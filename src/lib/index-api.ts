@@ -23,6 +23,11 @@ export function searchNotes(text: string): Promise<IndexedNote[]> {
   return invoke("search_notes", { text });
 }
 
+/** Every note in the index, most recently modified (file mtime) first. */
+export function listNotes(): Promise<IndexedNote[]> {
+  return invoke("list_notes");
+}
+
 /** Task notes; `category` filters to tasks tagged with it. */
 export function listTasks(opts: { category?: string } = {}): Promise<IndexedNote[]> {
   return invoke("list_tasks", { category: opts.category ?? null });

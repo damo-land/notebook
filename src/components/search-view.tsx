@@ -1,6 +1,8 @@
 // Search view (T10): `/search` in the capture palette morphs the input into a
 // vault search box. Every keystroke queries the SQLite index (searchNotes:
 // FTS5 over bodies + LIKE over titles and tags); hits render underneath.
+// An empty query lists the whole vault instead (listNotes: index-backed,
+// newest mtime first) — see the effect below.
 //
 // Keys: Up/Down move selection; Enter opens the selected note in the T7
 // editor (which renders above this view — Esc there drops back here); ⌘⌫
@@ -18,7 +20,7 @@
 // query would mean lifting state into App.
 
 import { useEffect, useRef, useState } from "react";
-import { deleteNote, isDeleteChord, searchNotes, type IndexedNote } from "../lib/index-api";
+import { deleteNote, isDeleteChord, listNotes, searchNotes, type IndexedNote } from "../lib/index-api";
 import { openNote } from "../lib/note-editor-bus";
 import { dismissOverlay, useFocusOnOverlayShown } from "../lib/overlay";
 
@@ -40,24 +42,25 @@ export function SearchView({ onClose }: SearchViewProps) {
 
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Per-keystroke query. An empty query fires nothing (no wildcard) and
-  // clears the list.
+  // Per-keystroke query. An empty query lists the whole vault (T5): every
+  // note from the SQLite index, newest file mtime first — so opening search
+  // shows everything, typing narrows, and clearing returns to the full list.
+  // The full list is uncapped (it scrolls internally); search hits keep the
+  // MAX_RESULTS screenful.
   useEffect(() => {
-    if (query.trim() === "") {
-      setResults([]);
-      setSearched(false);
-      return;
-    }
+    const empty = query.trim() === "";
     let cancelled = false;
     void (async () => {
       try {
-        const hits = await searchNotes(query);
-        if (!cancelled) setResults(hits.slice(0, MAX_RESULTS));
+        const hits = empty ? await listNotes() : (await searchNotes(query)).slice(0, MAX_RESULTS);
+        if (!cancelled) setResults(hits);
       } catch (err) {
         console.error("search failed:", err);
         if (!cancelled) setResults([]);
       } finally {
-        if (!cancelled) setSearched(true);
+        // `searched` stays false for the empty query: zero notes then reads
+        // as "nothing here yet", not "no matches".
+        if (!cancelled) setSearched(!empty);
       }
     })();
     return () => {
@@ -142,7 +145,7 @@ export function SearchView({ onClose }: SearchViewProps) {
       />
       {results.length === 0 ? (
         <div className="tasks-empty under-input">
-          {searched ? "no matches" : "type to search"}
+          {searched ? "no matches" : "no notes yet"}
         </div>
       ) : (
         <ul className="tasks-list under-input" role="listbox" aria-label="search results">

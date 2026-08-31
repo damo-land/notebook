@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -279,6 +279,25 @@ fn hide_overlay(app: AppHandle) {
     hide_overlay_panel(&app);
 }
 
+/// True while the frontend is in the chat view or has a chat turn in flight.
+///
+/// Read by the click-outside/resign-key hide in `setup`, and only there: users
+/// reported the chat view closing the moment an answer arrived, because
+/// something momentarily takes key status off the panel and the resign-key
+/// path treats that as a click outside. The focus steal itself is unconfirmed,
+/// so this is the defensive half — while chat is on screen or an answer is
+/// being written, losing key does not hide the overlay. Esc and Ctrl+W go
+/// through [`hide_overlay`] and are unaffected.
+#[derive(Default)]
+struct ChatActive(AtomicBool);
+
+/// Set (or clear) [`ChatActive`]. The frontend calls this whenever the chat
+/// view is entered/left or a turn starts/finishes streaming.
+#[tauri::command]
+fn set_chat_active(app: AppHandle, active: bool) {
+    app.state::<ChatActive>().0.store(active, Ordering::Relaxed);
+}
+
 // --- Overlay height ----------------------------------------------------------
 //
 // The overlay grows to fit its content (T3 measures the DOM and calls
@@ -504,11 +523,9 @@ fn shoot_present_overlay(app: &AppHandle, attempt: u32) {
     let hopped = app.run_on_main_thread(move || {
         match handle.get_webview_panel(OVERLAY_WINDOW_LABEL) {
             Ok(panel) => {
-                // Without this the panel belongs to the desktop Space alone, so
-                // a full-screen app in front puts it on a Space nobody is
-                // looking at. (The shipped overlay has no such behaviour — how
-                // alt+space should behave over a full-screen app is a real
-                // question for a later task; this hook does not change it.)
+                // Redundant with the shipped setup path (which now sets the
+                // same collection behavior once at panel creation), but kept
+                // so a harness run is self-sufficient even if setup changes.
                 use tauri_nspanel::objc2_app_kit::NSWindowCollectionBehavior;
                 panel.set_collection_behavior(
                     NSWindowCollectionBehavior::CanJoinAllSpaces
@@ -612,6 +629,14 @@ struct IndexState {
 fn search_notes(state: State<IndexState>, text: String) -> Result<Vec<index::NoteRow>, String> {
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
     index::search_notes(&conn, &text).map_err(|e| e.to_string())
+}
+
+/// The search view's empty-query listing (T5): every note, newest file mtime
+/// first, straight from the SQLite index.
+#[tauri::command]
+fn list_notes(state: State<IndexState>) -> Result<Vec<index::NoteRow>, String> {
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    index::list_all_notes(&conn).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1106,6 +1131,18 @@ fn spawn_enrich_worker(
                     match (ok, status) {
                         (true, "enriched") => eprintln!("[enrich] {}: enriched: {line}", job.id),
                         (true, _) => eprintln!("[enrich] {}: skipped, note unchanged: {line}", job.id),
+                        // No Claude Code OAuth token: the sidecar's typed
+                        // NotAuthenticatedError, flattened to its stable
+                        // message prefix. One line per queued note; nothing
+                        // was written, so a later configured run enriches it —
+                        // and `dispatched` already stops any retry loop this
+                        // session.
+                        (false, _) if line.contains("Not authenticated with Claude Code") => {
+                            eprintln!(
+                                "[enrich] {}: skipped, LLM not configured (run `claude setup-token`); note left unmarked",
+                                job.id
+                            )
+                        }
                         (false, _) => {
                             eprintln!("[enrich] {}: job failed, note left untouched: {line}", job.id)
                         }
@@ -1183,10 +1220,13 @@ pub fn run() {
         )
         .manage(SidecarState::default())
         .manage(ChosenDisplay::default())
+        .manage(ChatActive::default())
         .invoke_handler(tauri::generate_handler![
             hide_overlay,
+            set_chat_active,
             resize_overlay,
             search_notes,
+            list_notes,
             list_tasks,
             due_alerts,
             reindex,
@@ -1331,6 +1371,21 @@ pub fn run() {
                 tauri_nspanel::objc2_app_kit::NSWindowStyleMask::NonactivatingPanel,
             );
 
+            // Follow the user across Spaces. Without this the panel belongs to
+            // the one desktop Space it first appeared on, so summoning it from
+            // another Space (or over a full-screen app) shows nothing — the
+            // panel is "visible" on a Space nobody is looking at.
+            // FullScreenAuxiliary lets it overlay full-screen apps instead of
+            // bouncing the user out of them. Set once here: collection
+            // behavior sticks to the panel, so every show/toggle inherits it.
+            {
+                use tauri_nspanel::objc2_app_kit::NSWindowCollectionBehavior;
+                panel.set_collection_behavior(
+                    NSWindowCollectionBehavior::CanJoinAllSpaces
+                        | NSWindowCollectionBehavior::FullScreenAuxiliary,
+                );
+            }
+
             // Click-outside dismissal. Clicking anything else makes the panel
             // resign key, and macOS reports that through tao's own window
             // delegate as `Focused(false)` — the same hide Esc uses.
@@ -1350,12 +1405,28 @@ pub fn run() {
             // leaving it armed makes the harness untestable rather than making
             // it honest. `shoot_view_env` is already debug-build-only, so a
             // release build cannot reach this branch at all.
+            //
+            // Also suppressed while [`ChatActive`] is set — chat view on
+            // screen, or a chat turn still in flight. Something takes key
+            // status off the panel around the moment an answer lands (root
+            // cause unconfirmed), and hiding here threw users out of the chat
+            // they were reading. Every explicit dismissal (Esc, Ctrl+W, the
+            // alt+space toggle) bypasses this handler entirely, so they all
+            // still hide.
             let dismiss_handle = app.handle().clone();
             let shooting = shoot_view_env().is_some();
             window.on_window_event(move |event| {
                 if let tauri::WindowEvent::Focused(false) = event {
                     if shooting {
                         eprintln!("[notebook] overlay resigned key (screenshot hook: not hiding)");
+                        return;
+                    }
+                    if dismiss_handle
+                        .state::<ChatActive>()
+                        .0
+                        .load(Ordering::Relaxed)
+                    {
+                        eprintln!("[notebook] overlay resigned key (chat active: not hiding)");
                         return;
                     }
                     eprintln!("[notebook] overlay resigned key: hiding");
