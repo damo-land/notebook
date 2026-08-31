@@ -128,15 +128,27 @@ export async function confineNotePath(vaultDir: string, idOrPath: string): Promi
   return candidate;
 }
 
-async function listVaultNotes(vaultDir: string): Promise<VaultNote[]> {
-  let names: string[];
+/**
+ * The vault's note filenames, sorted. Symlinked entries are SKIPPED, not
+ * followed: a symlink is not a vault note, and reading through one would leak
+ * outside content into search snippets and listing titles (T8 audit fix).
+ * Shared with mcp.ts like confineNotePath so the check can't drift.
+ */
+export async function listNoteFilenames(vaultDir: string): Promise<string[]> {
   try {
-    names = await readdir(vaultDir);
+    const entries = await readdir(vaultDir, { withFileTypes: true });
+    return entries
+      .filter((e) => e.name.endsWith(".md") && !e.isSymbolicLink())
+      .map((e) => e.name)
+      .sort();
   } catch {
     return [];
   }
+}
+
+async function listVaultNotes(vaultDir: string): Promise<VaultNote[]> {
   const notes: VaultNote[] = [];
-  for (const name of names.filter((n) => n.endsWith(".md")).sort()) {
+  for (const name of await listNoteFilenames(vaultDir)) {
     let raw: string;
     try {
       raw = await readFile(`${vaultDir}/${name}`, "utf8");

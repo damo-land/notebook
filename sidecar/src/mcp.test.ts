@@ -71,3 +71,60 @@ test("mcp read_note: symlinks escaping the vault are rejected", async (t) => {
     await rm(outside, { recursive: true, force: true });
   }
 });
+
+test("mcp listings: symlinked notes are skipped during enumeration", async (t) => {
+  const vaultDir = await mkdtemp(join(tmpdir(), "stash-mcp-vault-"));
+  const outside = await mkdtemp(join(tmpdir(), "stash-mcp-outside-"));
+  try {
+    await writeFile(
+      join(outside, "secret.md"),
+      "---\nid: zanzibar-secret\nkind: task\n---\nZanzibar contraband ledger\n\noutside the vault\n",
+    );
+    await writeFile(join(vaultDir, "real.md"), "---\nid: real\n---\nReal note\n");
+    try {
+      await symlink(join(outside, "secret.md"), join(vaultDir, "sneaky.md"));
+    } catch (err) {
+      t.skip(`filesystem does not support symlinks: ${(err as Error).message}`);
+      return;
+    }
+
+    const transport = new StdioClientTransport({
+      command: process.execPath, // node
+      args: ["--import", "tsx", "src/mcp.ts"],
+      cwd: sidecarDir,
+      env: { ...process.env, STASH_VAULT_DIR: vaultDir } as Record<string, string>,
+      stderr: "ignore",
+    });
+    const client = new Client({ name: "mcp-symlink-list-test", version: "0.1.0" });
+    try {
+      await client.connect(transport); // spawns the server and runs initialize
+
+      // The outside file's content must appear in NO search result, snippet,
+      // task or listing title — across every tool that enumerates the vault.
+      const search = await client.callTool({
+        name: "search_notes",
+        arguments: { query: "zanzibar" },
+      });
+      const tasks = await client.callTool({ name: "list_tasks", arguments: {} });
+      const recent = await client.callTool({ name: "list_recent", arguments: { n: 10 } });
+      // search_notes echoes the query back, so check its MATCHES, not the echo.
+      assert.ok(JSON.stringify(search.content).includes('\\"count\\": 0'));
+      for (const res of [search, tasks, recent]) {
+        const text = JSON.stringify(res.content);
+        assert.ok(!text.includes("contraband"));
+        assert.ok(!text.includes("zanzibar-secret"));
+        assert.ok(!text.includes("outside the vault"));
+      }
+
+      // Honest notes still list and search exactly as before.
+      const honest = await client.callTool({ name: "search_notes", arguments: { query: "real" } });
+      assert.ok(JSON.stringify(honest.content).includes("Real note"));
+      assert.ok(JSON.stringify(recent.content).includes("Real note"));
+    } finally {
+      await client.close();
+    }
+  } finally {
+    await rm(vaultDir, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
