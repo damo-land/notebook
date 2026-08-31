@@ -6,7 +6,9 @@
 //   provider "claude" -> llm.ts runPrompt (the Agent SDK), with the model
 //                        resolved by the precedence documented on
 //                        resolveClaudeModel below;
-//   provider "ollama" -> ollama.ts (a typed not-implemented stub until T3/T4).
+//   provider "ollama" -> ollama.ts (chat is real as of T3 — tool loop with
+//                        RAG-lite fallback; the prompt shape is still a typed
+//                        not-implemented stub).
 //
 // Deliberately not a plugin architecture: two providers, one if/else.
 import { chatTurn, type ChatTurnParams, type ChatTurnResult } from "./chat.ts";
@@ -95,6 +97,8 @@ export async function providerChatTurn(
   params: ChatTurnParams,
   hooks: { onText?(delta: string): void } = {},
 ): Promise<ChatTurnResult> {
-  if (config.provider === "ollama") return ollamaChat(params, hooks);
+  // Ollama gets the configured model verbatim (a blank one is its typed
+  // "pick a model in Settings" error, not a default).
+  if (config.provider === "ollama") return ollamaChat(config.model, params, hooks);
   return chatTurn(params, { runPrompt: providerRunPrompt(config) }, hooks);
 }

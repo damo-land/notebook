@@ -62,13 +62,17 @@ import { fileURLToPath } from "node:url";
 import {
   CHAT_SYSTEM_APPEND,
   CHAT_TOOLS,
-  chatDeps,
   chatPromptOptions,
   chatTurn,
   type ChatDeps,
   type ChatTurnResult,
 } from "../src/chat.ts";
-import type { RunPromptOptions } from "../src/llm.ts";
+import { runPrompt, type RunPromptOptions } from "../src/llm.ts";
+
+// Real-SDK deps for the --real path. Built here rather than exported from
+// chat.ts: production wiring goes through the provider seam (provider.ts),
+// and a ready-made raw-runPrompt ChatDeps export there was a seam bypass.
+const chatDeps: ChatDeps = { runPrompt };
 // The frontend's two transcript reducers — the same functions the chat view
 // calls — so the proof can carry a turn all the way through to what the user
 // is finally left looking at. Pure TS, no React, no DOM.

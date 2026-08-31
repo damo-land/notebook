@@ -18,6 +18,7 @@
 // follows. A reader must therefore check `type` BEFORE looking `id` up in its
 // pending-request map, or the first chunk closes the request early.
 import { createInterface } from "node:readline";
+import type { ChatHistoryTurn } from "./chat.ts";
 import { enrichNote, type RelatedNote } from "./enrich.ts";
 import { runPrompt } from "./llm.ts";
 import { probeOllama } from "./ollama.ts";
@@ -36,6 +37,23 @@ function toRelated(value: unknown): RelatedNote[] {
     const r = entry as { id?: unknown; title?: unknown };
     if (typeof r?.id === "string" && r.id !== "") {
       out.push({ id: r.id, title: typeof r.title === "string" ? r.title : "" });
+    }
+  }
+  return out;
+}
+
+/**
+ * Tolerant coercion of the `history` payload (the frontend transcript,
+ * replayed for the ollama provider's conversation continuity). Anything not
+ * shaped like a prior turn is dropped.
+ */
+function toHistory(value: unknown): ChatHistoryTurn[] {
+  if (!Array.isArray(value)) return [];
+  const out: ChatHistoryTurn[] = [];
+  for (const entry of value) {
+    const t = entry as { role?: unknown; content?: unknown };
+    if ((t?.role === "user" || t?.role === "assistant") && typeof t.content === "string") {
+      out.push({ role: t.role, content: t.content });
     }
   }
   return out;
@@ -107,12 +125,14 @@ async function handle(req: Request): Promise<void> {
         const session = req.params?.["session"];
         const turn = req.params?.["turn"];
         const turnId = typeof turn === "string" ? turn : null;
+        const history = toHistory(req.params?.["history"]);
         const result = await providerChatTurn(
           coerceLlmConfig(req.params?.["llm"]),
           {
             vaultDir,
             text,
             ...(typeof session === "string" && session !== "" ? { session } : {}),
+            ...(history.length > 0 ? { history } : {}),
           },
           { onText: (delta) => emitChunk(req.id, turnId, delta) },
         );
