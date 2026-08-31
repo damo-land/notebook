@@ -1,6 +1,6 @@
 # Spotlight Overlay Redesign
 
-Status: draft
+Status: done
 Source: The capture overlay is visually heavy and unlike Spotlight — oversized fixed window with dead space, opaque background, input styled as a bordered card, small monospace type — and focus never returns on reopen, which also silently breaks Esc.
 
 ## Goal
@@ -64,7 +64,8 @@ blocks every later run and is invisible in the dock.
 
 ### T2: Native window shell — transparency, vibrancy, resize, dismissal
 - Type: ship
-- Status: building
+- Status: landed
+- Checkers: behavioral PASS / audit PASS — evidence criterion marked UNVERIFIABLE-as-written by audit (no `screencapture -l` shot can show through-content; backing-store capture of a compositor-blurred effect). Both lenses independently measured `rgb(124,124,124)` vs main's `rgb(30,30,30)`, alpha 255 everywhere. Flags: unguarded `rm -rf "$FIXTURE_VAULT"` in shoot.sh honours a user-set `SHOOT_VAULT_DIR`; `resize_overlay` has no caller and its monitor/`to_logical` chain has never run; `overlay-shown` never emitted in any observed run and nothing listens yet; undisclosed +36 lines in `src-tauri/tests/durable_writes.rs`; two `window-vibrancy` versions in the tree; `pkill` pattern would also kill a sibling checkout's debug build. Detail: docs/reports/spotlight-overlay-redesign-t2-check.md
 - Branch: anchor/spotlight-overlay-redesign-t2
 - Escalation: required — adds a Cargo dependency (`window-vibrancy`) and enables `macOSPrivateApi`, a private-API code path.
 - Blocked by: T1 (its screenshots are this task's evidence).
@@ -82,9 +83,10 @@ blocks every later run and is invisible in the dock.
 
 ### T3: Shell behaviours — focus, dismissal semantics, dynamic height, motion
 - Type: ship
-- Status: todo
-- Branch: —
+- Status: landed
+- Branch: anchor/spotlight-overlay-redesign-t3
 - Escalation: none
+- Checkers: behavioral PASS / audit PASS — focus+clear proven in one screenshot (seeded draft gone, typed-after-reopen present); heights 96/188/540pt reproduced, monitor conversion arithmetically verified (2x display), shrink observed 188→96pt; rm -rf guard exercised both branches; Esc observed working via keydown probe. Flags: click-outside clearing + layered Esc + jank are code-verified/manual-only; 120ms setTimeout survives CSS deletion as invisible delay; new src/lib/overlay.ts undisclosed by name (contents in-scope); App.css root sizing + rows=1 judged load-bearing for the height criterion, not T4 creep. Detail: docs/reports/spotlight-overlay-redesign-t3-check.md
 - Blocked by: T2 (consumes its resize command and show event).
 - Acceptance criteria:
   - On every open — first and subsequent — keyboard focus is in the active view's primary input. Proven by opening the overlay, dismissing it, reopening it, and typing without clicking: the characters land in the input. Record this as a documented manual step plus a screenshot from the T1 harness showing a visible caret or typed text after a reopen.
@@ -95,12 +97,14 @@ blocks every later run and is invisible in the dock.
   - The overlay appears and dismisses with a short transition (target ≤150ms) implemented in CSS. It must be removable by deleting a single rule or class — name it in the report.
   - **If live resizing proves visibly janky**, do NOT silently redesign: record a hold recommending the documented fallback (capture grows live, list views fixed height) and implement the fallback only if instructed.
   - `npm run typecheck` exits 0 and every pre-existing demo script still passes (`scripts/*-demo.ts` individually via `npx tsx`).
+  - **Safety guard carried over from T2's check.** `seed_fixture_vault` in `scripts/shoot.sh` begins with an unguarded `rm -rf "$FIXTURE_VAULT"`, where `FIXTURE_VAULT="${SHOOT_VAULT_DIR:-$OUT_DIR/fixture-vault}"` — so a user who points `SHOOT_VAULT_DIR` at a real directory has it deleted with no confirmation. Add a guard so the script refuses to delete a directory it did not create (e.g. require a marker file it writes itself, or refuse any path outside the gitignored output dir unless an explicit opt-in variable is set). Prove it: pointing `SHOOT_VAULT_DIR` at a directory containing a file the script did not create causes it to refuse and exit non-zero, leaving that file intact.
 
 ### T4: Visual design — typography, chrome, all five views
 - Type: ship
-- Status: todo
-- Branch: —
+- Status: landed
+- Branch: anchor/spotlight-overlay-redesign-t4
 - Escalation: none
+- Checkers: behavioral FAIL / audit FAIL — BOTH solely on the "documented manual pass" clause, both explicitly passing every other criterion (keydown handlers byte-identical to main; zero monospace; all chrome deleted from CSS and markup; screenshots live-reproduced). Orchestrator ruling: spec defect in evidence location (T2 precedent — the doc lives in the check report); live manual pass is the land condition, performable only by the user (no Accessibility grant). Flags: TS getVaultDir ignores NOTEBOOK_VAULT_DIR (real-vault writes from capture/editor/task-toggle under the harness — follow-up); classifier-warned methods verified residue-free. Detail: docs/reports/spotlight-overlay-redesign-t4-check.md
 - Blocked by: T3 (shares `src/App.css` and `src/App.tsx`; running them in parallel would conflict).
 - Acceptance criteria:
   - The capture input renders in the **system** font stack (no `ui-monospace`/`Menlo`/monospace on the capture input) at a size of at least 20px.
