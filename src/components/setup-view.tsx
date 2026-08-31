@@ -90,11 +90,15 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
   const [initialLlm, setInitialLlm] = useState<{ provider: string; model: string } | null>(null);
 
   // "Launch at login". Wizard: default CHECKED, so Enter-Enter enables it.
-  // Settings: overwritten by the get_autostart probe (live plugin state);
-  // initialAutostart stays null until that lands, which savePlan treats as
-  // changed (set_autostart is idempotent).
-  const [autostart, setAutostart] = useState(WIZARD_AUTOSTART_DEFAULT);
+  // Settings: the box must never show a value that didn't come from the
+  // get_autostart probe (live plugin state) — it starts UNCHECKED and
+  // DISABLED, the probe seeds both states, a failed probe leaves it disabled
+  // and puts the failure on the error line, and savePlan treats a null
+  // initial as "no change", so an untouched box (or a fast Enter before the
+  // probe lands) can never emit a set_autostart.
+  const [autostart, setAutostart] = useState(firstRun ? WIZARD_AUTOSTART_DEFAULT : false);
   const [initialAutostart, setInitialAutostart] = useState<boolean | null>(null);
+  const autostartDisabled = mode === "settings" && initialAutostart === null;
 
   const [claudeStatus, setClaudeStatus] = useState<ClaudeStatus | null>(null);
   const [ollamaProbe, setOllamaProbe] = useState<OllamaProbe | null>(null);
@@ -174,14 +178,20 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
       .then(setOllamaProbe)
       .catch(() => setOllamaProbe({ reachable: false, models: [] }));
     // Settings only: seed the checkbox from the LIVE plugin state, not the
-    // stored config. The wizard keeps its default-checked box instead.
+    // stored config; until then it stays unchecked and disabled. A failed
+    // probe leaves initialAutostart null (box disabled, savePlan skips it)
+    // and surfaces on the error line. The wizard keeps its default-checked
+    // box instead — nothing is registered yet on first run.
     if (!firstRun) {
       void invoke<boolean>("get_autostart")
         .then((enabled) => {
           setAutostart(enabled);
           setInitialAutostart(enabled);
         })
-        .catch((err) => console.error("get_autostart failed:", err));
+        .catch((err) => {
+          console.error("get_autostart failed:", err);
+          setError(`get_autostart failed: ${String(err)}`);
+        });
     }
   }, [aiVisible, firstRun]);
 
@@ -211,10 +221,16 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
             : null;
 
   /** Focus the next field in order, skipping any not currently rendered
-   *  (the model select is a note line when there is nothing to pick). */
+   *  (the model select is a note line when there is nothing to pick) or
+   *  disabled (the settings checkbox before the get_autostart probe lands —
+   *  a disabled input can't take focus, so Tab must not dead-end on it). */
   const focusNext = (from: SettingsField, delta: 1 | -1) => {
+    const focusable = (f: SettingsField) => {
+      const el = refs[f].current;
+      return el !== null && !(el as HTMLInputElement | HTMLSelectElement).disabled;
+    };
     let f = nextField(order, from, delta);
-    for (let i = 0; i < order.length && !refs[f].current; i++) f = nextField(order, f, delta);
+    for (let i = 0; i < order.length && !focusable(f); i++) f = nextField(order, f, delta);
     refs[f].current?.focus();
   };
 
@@ -415,6 +431,7 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
                 ref={autostartRef}
                 type="checkbox"
                 checked={autostart}
+                disabled={autostartDisabled}
                 onChange={(e) => setAutostart(e.target.checked)}
                 aria-label="launch at login"
               />

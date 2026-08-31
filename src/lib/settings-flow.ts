@@ -166,7 +166,11 @@ export function initialWizard(): WizardState {
  *  awaits each before the next), and the next state. vault → save the path,
  *  advance; ai → save the (pre)selected llm, then ALWAYS set_autostart with
  *  the checkbox state (checked default → true; unchecked → false — an
- *  explicit disable, idempotent on a fresh machine), done. */
+ *  explicit disable, idempotent on a fresh machine), done. Pure: a failed
+ *  action leaves the caller on the same state, and re-confirming it yields
+ *  the IDENTICAL plan — the retry after a set_autostart refusal re-runs the
+ *  idempotent llm write, then set_autostart again, with nothing duplicated
+ *  beyond that. */
 export function wizardConfirm(
   state: WizardState,
   args: { vaultPath: string; llm: LlmChoice; autostart: boolean }
@@ -187,8 +191,10 @@ export function wizardConfirm(
  *  strictly last. The caller awaits each action before dispatching the next
  *  (the config-writing commands must never run concurrently). `initialLlm`
  *  null (no saved llm yet) counts as changed, so the first save writes the
- *  defaults out; `initialAutostart` null (get_autostart probe not landed)
- *  likewise counts as changed — set_autostart is idempotent. */
+ *  defaults out; `initialAutostart` null (get_autostart probe unresolved or
+ *  FAILED) is the opposite — NO change, never a set_autostart: the view
+ *  disables the checkbox until the probe seeds it, so an untouched box (or a
+ *  fast Enter, or a failed probe) can never silently flip autostart. */
 export function savePlan(args: {
   initialVaultPath: string;
   vaultPath: string;
@@ -206,7 +212,7 @@ export function savePlan(args: {
     args.initialLlm.provider !== args.llm.provider ||
     args.initialLlm.model !== selectedModel(args.llm);
   if (llmChanged) plan.push(llmSaveAction(args.llm));
-  if (args.initialAutostart !== args.autostart) {
+  if (args.initialAutostart !== null && args.initialAutostart !== args.autostart) {
     plan.push({ cmd: "set_autostart", enabled: args.autostart });
   }
   return plan;

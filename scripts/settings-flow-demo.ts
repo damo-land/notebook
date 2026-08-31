@@ -73,6 +73,20 @@ import {
   });
   assert.deepStrictEqual(unchecked.actions[1], { cmd: "set_autostart", enabled: false });
   assert.strictEqual(unchecked.state.done, true);
+
+  // Partial-failure retry (audit fix 2): if set_autostart rejects after
+  // set_llm_config already succeeded, the view keeps the SAME ai-step state
+  // (setWizard never ran) and shows the error; the next Enter re-confirms
+  // that state. wizardConfirm is pure, so the retry plan is IDENTICAL —
+  // re-running the idempotent llm write, then set_autostart again — and no
+  // extra actions accumulate across retries.
+  const retry = wizardConfirm(first.state, {
+    vaultPath: "/Users/me/Stash",
+    llm,
+    autostart: WIZARD_AUTOSTART_DEFAULT,
+  });
+  assert.deepStrictEqual(retry.actions, second.actions); // stable retry plan
+  assert.deepStrictEqual(retry.state, second.state);
 }
 
 // --- provider toggle switches the model-list source --------------------------
@@ -188,7 +202,10 @@ import {
   );
 
   // No saved llm yet (fresh config): a default-valued choice still saves once.
-  // An unresolved get_autostart probe (null) likewise counts as changed.
+  // But a null initialAutostart — the get_autostart probe unresolved or
+  // failed — is "no change" (audit fix 1): the checkbox is disabled until the
+  // probe seeds it, and an untouched box must NEVER emit a set_autostart, so
+  // a fast Enter or a failed probe cannot silently flip autostart.
   assert.deepStrictEqual(
     savePlan({
       initialVaultPath: "/v/old",
@@ -198,10 +215,18 @@ import {
       llm: llmUnchanged,
       autostart: false,
     }),
-    [
-      { cmd: "set_llm_config", provider: "claude", model: DEFAULT_CLAUDE_MODEL },
-      { cmd: "set_autostart", enabled: false },
-    ]
+    [{ cmd: "set_llm_config", provider: "claude", model: DEFAULT_CLAUDE_MODEL }]
+  );
+
+  // Same with everything else unchanged: null initial → EMPTY plan, no
+  // set_autostart regardless of what the (disabled) checkbox state holds.
+  assert.deepStrictEqual(
+    savePlan({ ...initial, initialAutostart: null, vaultPath: "/v/old", llm: llmUnchanged, autostart: false }),
+    []
+  );
+  assert.deepStrictEqual(
+    savePlan({ ...initial, initialAutostart: null, vaultPath: "/v/old", llm: llmUnchanged, autostart: true }),
+    []
   );
 }
 
