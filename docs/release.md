@@ -125,6 +125,32 @@ brew install --cask stash
 `--no-quarantine` is NOT needed: releases are signed and notarized, so
 Gatekeeper accepts the app as-is.
 
+## App icon
+
+The bundled icon set in `src-tauri/icons/` is generated from a single source
+image; the generated set is what ships, the source is not committed.
+
+Requirements for the source image:
+
+- **1024×1024 PNG** (exact — the regen script refuses anything else).
+- Keep the actual artwork within roughly **80% of the canvas**: macOS renders
+  app icons with an inset rounded-rect mask, so art that runs to the edges
+  looks oversized next to other Dock icons.
+
+To update the icon:
+
+1. Drop the source image at `packaging/icon.png`.
+2. Run:
+
+   ```sh
+   scripts/regen-icons.sh
+   ```
+
+The script validates the dimensions, runs `npx tauri icon packaging/icon.png`,
+and leaves the regenerated set in `src-tauri/icons/`. Review and commit the
+changed files under `src-tauri/icons/`. Rerun anytime the source changes — it
+is idempotent.
+
 ## Known limitations
 
 - **The Node sidecar is NOT bundled into the .app.** The app spawns it via
