@@ -134,6 +134,14 @@ export interface EnrichDeps {
     text: string,
     opts?: { tools?: string[]; allowedTools?: string[]; maxTurns?: number },
   ): Promise<string>;
+  /**
+   * Re-run the prompt once when the reply fails to parse, then give up as
+   * usual (throw, note untouched, no marker). Set for the ollama provider
+   * only — local models flub "reply with ONE JSON object" often enough that
+   * one more attempt is worth a local call, whereas the claude path keeps its
+   * original single-shot behaviour byte for byte. Default: off.
+   */
+  retryMalformedReplyOnce?: boolean;
   /** Injectable clock; only the `enriched` timestamp uses it. */
   now?(): Date;
 }
@@ -383,16 +391,28 @@ export async function enrichNote(
   }
 
   const urls = extractUrls(body);
-  const reply = await deps.runPrompt(
-    buildPrompt(body, urls, related),
+  const prompt = buildPrompt(body, urls, related);
+  const promptOpts =
     urls.length > 0
       ? // Bookmark behaviour: the model reads the referenced page itself.
         // `tools` makes WebFetch available; `allowedTools` is what stops it
         // asking for permission we cannot answer in a background process.
         { tools: ["WebFetch"], allowedTools: ["WebFetch"], maxTurns: 8 }
-      : {},
-  );
-  const { tags: proposedTags, context } = parseEnrichment(reply);
+      : {};
+  // The model call sits OUTSIDE the try: a call failure (unreachable daemon,
+  // missing model, no auth) always throws after exactly one attempt. Only a
+  // reply that came back but fails to parse is retried, and only when the
+  // deps ask for it; the rethrow on the second failure is the same
+  // marker-safe skip as today.
+  const reply = await deps.runPrompt(prompt, promptOpts);
+  let enrichment: Enrichment;
+  try {
+    enrichment = parseEnrichment(reply);
+  } catch (err) {
+    if (deps.retryMalformedReplyOnce !== true) throw err;
+    enrichment = parseEnrichment(await deps.runPrompt(prompt, promptOpts));
+  }
+  const { tags: proposedTags, context } = enrichment;
 
   const { text, links } = clampLinks(
     context,

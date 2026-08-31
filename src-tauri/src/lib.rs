@@ -1394,6 +1394,22 @@ fn spawn_enrich_worker(
                                 job.id
                             )
                         }
+                        // Same degradation contract, ollama provider: the
+                        // sidecar's typed errors flattened to their stable
+                        // message prefixes (sidecar/src/ollama.ts). Nothing
+                        // was written, no marker — a later run re-enriches.
+                        (false, _) if line.contains("Ollama is not reachable") => {
+                            eprintln!(
+                                "[enrich] {}: skipped, Ollama not reachable; note left unmarked",
+                                job.id
+                            )
+                        }
+                        (false, _) if line.contains("Ollama model missing") => {
+                            eprintln!(
+                                "[enrich] {}: skipped, model missing — pick another in Settings; note left unmarked",
+                                job.id
+                            )
+                        }
                         (false, _) => {
                             eprintln!("[enrich] {}: job failed, note left untouched: {line}", job.id)
                         }
