@@ -129,7 +129,12 @@ pub fn reindex(conn: &Connection, vault_dir: &Path) -> Result<usize> {
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("md") || !path.is_file() {
+        // Symlink skip (T9): `file_type()` has lstat semantics — a symlink
+        // reports is_symlink, not is_file — so only regular `.md` files are
+        // indexed and a link can never pull in a file from outside the vault
+        // (mirrors the sidecar's listNoteFilenames).
+        let is_regular_file = entry.file_type().map(|t| t.is_file()).unwrap_or(false);
+        if path.extension().and_then(|e| e.to_str()) != Some("md") || !is_regular_file {
             continue;
         }
         let Ok(text) = std::fs::read_to_string(&path) else {
@@ -467,8 +472,8 @@ fn watcher_reindex(conn: &Arc<Mutex<Connection>>, vault_dir: &Arc<Mutex<PathBuf>
 #[cfg(test)]
 mod tests {
     use super::{
-        list_all_notes, open_db, reindex, remove_note, resolve_vault_dir, watcher_reindex,
-        LEGACY_VAULT_DIR_NAME,
+        list_all_notes, open_db, reindex, remove_note, resolve_vault_dir, search_notes,
+        watcher_reindex, LEGACY_VAULT_DIR_NAME,
     };
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
@@ -629,6 +634,48 @@ mod tests {
         // an event in the OLD directory — indexes the CURRENT vault only.
         assert!(watcher_reindex(&conn, &shared_dir));
         assert_eq!(ids(&conn), vec!["new"]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `reindex` must not follow symlinks (T9): a symlinked `.md` inside the
+    /// vault pointing at an outside file must be skipped, so the outside
+    /// file's content can never leak into the index (mirrors the sidecar's
+    /// listNoteFilenames skip). Unix-only: symlink creation needs
+    /// `std::os::unix::fs::symlink`; elsewhere this test is compiled out.
+    #[cfg(unix)]
+    #[test]
+    fn reindex_skips_symlinked_md_entries() {
+        let dir = scratch_home("symlink-skip");
+        let vault = dir.join("vault");
+        let outside = dir.join("outside");
+        std::fs::create_dir_all(&vault).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(
+            vault.join("honest.md"),
+            "---\nid: honest\nkind: note\ncreated: 2026-08-30T10:00:00\n---\nhonest note body\n",
+        )
+        .unwrap();
+        std::fs::write(
+            outside.join("secret.md"),
+            "---\nid: outside\nkind: note\ncreated: 2026-08-30T11:00:00\n---\nzzz-outside-secret-zzz\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(outside.join("secret.md"), vault.join("sneaky.md")).unwrap();
+
+        let conn = open_db(&dir.join("index.db")).unwrap();
+        // Only the honest note is indexed; the symlinked entry is skipped.
+        assert_eq!(reindex(&conn, &vault).unwrap(), 1);
+        let ids: Vec<String> = list_all_notes(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|n| n.id)
+            .collect();
+        assert_eq!(ids, vec!["honest"]);
+        // No row/FTS hit carries the outside file's distinctive content …
+        assert!(search_notes(&conn, "zzz-outside-secret-zzz").unwrap().is_empty());
+        // … while the honest note's body is still searchable.
+        assert_eq!(search_notes(&conn, "honest").unwrap().len(), 1);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
