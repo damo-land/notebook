@@ -26,8 +26,12 @@ const OBSIDIAN_REGISTRY = "Library/Application Support/obsidian/obsidian.json";
 interface SetupViewProps {
   /** First run: no vault configured yet, so Esc cannot cancel out. */
   firstRun: boolean;
-  /** Vault confirmed and applied (set_vault_dir succeeded). */
-  onDone: () => void;
+  /**
+   * Vault confirmed and applied (set_vault_dir succeeded). Awaited: the view
+   * stays in its saving state until the caller has re-resolved its own vault
+   * dir, so nothing typed right after confirming can race into the old one.
+   */
+  onDone: () => void | Promise<void>;
   /** Back to the capture view (Esc; ignored while firstRun). */
   onClose: () => void;
 }
@@ -66,7 +70,7 @@ export function SetupView({ firstRun, onDone, onClose }: SetupViewProps) {
     setError(null);
     try {
       await invoke("set_vault_dir", { path });
-      onDone();
+      await onDone();
     } catch (err) {
       setError(String(err));
     } finally {

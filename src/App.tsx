@@ -620,12 +620,13 @@ function App() {
   ) : view === "setup" ? (
     <SetupView
       firstRun={needsSetup}
-      onDone={() => {
-        // The config file now exists; re-resolve so captures already queued
-        // behind vaultDirRef land in the vault just chosen.
-        void (async () => {
-          vaultDirRef.current = await getVaultDir(tauriVaultFs, await homeDir());
-        })();
+      onDone={async () => {
+        // The config file now exists; AWAIT the re-resolution before leaving
+        // the setup view, so a capture typed immediately after confirming
+        // lands in the vault just chosen — never the pre-switch dir a stale
+        // vaultDirRef would point at. SetupView awaits us and stays in its
+        // saving state (errors included) until this resolves.
+        vaultDirRef.current = await getVaultDir(tauriVaultFs, await homeDir());
         setNeedsSetup(false);
         setView("capture");
       }}
