@@ -10,9 +10,10 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 // Safe direction: vault.ts has no import-time side effects. Path confinement
-// is SHARED with the chat tools (T7) so the symlink-hardened check can't
-// drift between the two call sites; the parsing helpers below stay copies.
-import { confineNotePath } from "./vault.ts";
+// (T7) and the symlink-skipping enumeration (T8) are SHARED with the chat
+// tools so the security checks can't drift between the two call sites; the
+// parsing helpers below stay copies.
+import { confineNotePath, listNoteFilenames } from "./vault.ts";
 
 // --- minimal read-only vault access (frontmatter format mirrors src/lib/vault) ---
 
@@ -82,14 +83,8 @@ async function resolveVaultDir(): Promise<string> {
 }
 
 async function listVaultNotes(vaultDir: string): Promise<VaultNote[]> {
-  let names: string[];
-  try {
-    names = await readdir(vaultDir);
-  } catch {
-    return [];
-  }
   const notes: VaultNote[] = [];
-  for (const name of names.filter((n) => n.endsWith(".md")).sort()) {
+  for (const name of await listNoteFilenames(vaultDir)) {
     const raw = await readFile(`${vaultDir}/${name}`, "utf8");
     const { data, body } = parseNoteFile(raw);
     const id = typeof data["id"] === "string" && data["id"] ? data["id"] : name.slice(0, -3);

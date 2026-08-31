@@ -52,6 +52,31 @@ test("readVaultNote: by id and by path; escapes are rejected; missing is friendl
   }
 });
 
+test("searchVault: symlinked notes are skipped during enumeration", async (t) => {
+  const dir = await makeVault();
+  const outside = await mkdtemp(join(tmpdir(), "stash-vault-outside-"));
+  try {
+    await writeFile(join(outside, "secret.md"), "Zanzibar contraband ledger\n\noutside the vault\n");
+    try {
+      await symlink(join(outside, "secret.md"), join(dir, "sneaky.md"));
+    } catch (err) {
+      t.skip(`filesystem does not support symlinks: ${(err as Error).message}`);
+      return;
+    }
+    // The outside file's content must appear in NO hit — id, title or snippet.
+    const hits = await searchVault(dir, "zanzibar contraband ledger vault");
+    assert.ok(!JSON.stringify(hits).toLowerCase().includes("zanzibar"));
+    assert.ok(!JSON.stringify(hits).includes("outside the vault"));
+    // Honest notes still search exactly as before alongside the hostile link.
+    const honest = await searchVault(dir, "sourdough starter");
+    assert.equal(honest.length, 1);
+    assert.equal(honest[0]!.id, "20260101-000000-sourdough");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
 test("readVaultNote: symlinks escaping the vault are rejected", async (t) => {
   const dir = await makeVault();
   const outside = await mkdtemp(join(tmpdir(), "stash-vault-outside-"));
