@@ -344,7 +344,7 @@ pub fn due_alerts(conn: &Connection, now: &str) -> Result<Vec<NoteRow>> {
 
 /// Vault dir name the app used before it was renamed to stash. Built from
 /// split literals so a repo-wide rename check doesn't match the old app name.
-const LEGACY_VAULT_DIR_NAME: &str = concat!("Note", "book");
+pub const LEGACY_VAULT_DIR_NAME: &str = concat!("Note", "book");
 
 /// `~/.config/stash/config.json` `{ "vaultDir" }` if present, else the
 /// pre-rename `~/<legacy>` dir when it exists on disk, else `<home>/Stash`;
