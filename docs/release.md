@@ -85,11 +85,45 @@ export GITHUB_REPO="damo/stash"
 4. `xcrun notarytool submit --wait` on the dmg, then `xcrun stapler staple`.
 5. Prints the dmg's `shasum -a 256` — this is the sha256 the Homebrew cask
    needs.
-6. `gh release create v<version> <dmg> --generate-notes` (or uploads to the
+6. Prints the updated Homebrew cask stanza (the `packaging/homebrew/stash.rb`
+   template with the new version and sha256 substituted) — paste it into the
+   tap repo, see [Homebrew tap](#homebrew-tap) below.
+7. `gh release create v<version> <dmg> --generate-notes` (or uploads to the
    release if the tag already exists).
 
 `--dry-run` prints all of the above with resolved versions/paths (identities
 masked) and exits before anything is signed or uploaded.
+
+## Homebrew tap
+
+Users install stash through a personal tap; the cask points at the dmg on the
+GitHub release. The cask template lives in this repo at
+`packaging/homebrew/stash.rb`; the live copy lives in the tap repo.
+
+### One-time setup
+
+1. Create a GitHub repo named `damo/homebrew-tap` (the `homebrew-` prefix is
+   what makes `brew tap damo/tap` resolve to
+   `github.com/damo/homebrew-tap`).
+2. Copy `packaging/homebrew/stash.rb` into it as `Casks/stash.rb` (drop the
+   template header comment), commit, push.
+
+### Per release
+
+1. Run `scripts/release.sh` — after the sha256 it prints the full updated
+   cask stanza with the new version and dmg sha256 substituted.
+2. Paste that stanza over the contents of `Casks/stash.rb` in
+   `damo/homebrew-tap`, commit, push. Done — the tap serves the new version.
+
+### Consumer side
+
+```sh
+brew tap damo/tap          # resolves to github.com/damo/homebrew-tap
+brew install --cask stash
+```
+
+`--no-quarantine` is NOT needed: releases are signed and notarized, so
+Gatekeeper accepts the app as-is.
 
 ## Known limitations
 
