@@ -1,10 +1,14 @@
 // Search view (T10): `/search` in the capture palette morphs the input into a
 // vault search box. Every keystroke queries the SQLite index (searchNotes:
 // FTS5 over bodies + LIKE over titles and tags); hits render underneath.
+// An empty query lists the whole vault instead (listNotes: index-backed,
+// newest mtime first) — see the effect below.
 //
 // Keys: Up/Down move selection; Enter opens the selected note in the T7
-// editor (which renders above this view — Esc there drops back here); Esc
-// goes back to the capture view (overlay stays up); Ctrl+W hides the overlay.
+// editor (which renders above this view — Esc there drops back here); ⌘⌫
+// deletes the selected note (to the macOS Trash — bare Backspace still edits
+// the query); Esc goes back to the capture view (overlay stays up); Ctrl+W
+// hides the overlay.
 //
 // Fetch model: one query per keystroke, no cache — the vault is
 // personal-scale. Out-of-order responses are dropped via the effect's
@@ -16,7 +20,7 @@
 // query would mean lifting state into App.
 
 import { useEffect, useRef, useState } from "react";
-import { searchNotes, type IndexedNote } from "../lib/index-api";
+import { deleteNote, isDeleteChord, listNotes, searchNotes, type IndexedNote } from "../lib/index-api";
 import { openNote } from "../lib/note-editor-bus";
 import { dismissOverlay, useFocusOnOverlayShown } from "../lib/overlay";
 
@@ -38,24 +42,25 @@ export function SearchView({ onClose }: SearchViewProps) {
 
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Per-keystroke query. An empty query fires nothing (no wildcard) and
-  // clears the list.
+  // Per-keystroke query. An empty query lists the whole vault (T5): every
+  // note from the SQLite index, newest file mtime first — so opening search
+  // shows everything, typing narrows, and clearing returns to the full list.
+  // The full list is uncapped (it scrolls internally); search hits keep the
+  // MAX_RESULTS screenful.
   useEffect(() => {
-    if (query.trim() === "") {
-      setResults([]);
-      setSearched(false);
-      return;
-    }
+    const empty = query.trim() === "";
     let cancelled = false;
     void (async () => {
       try {
-        const hits = await searchNotes(query);
-        if (!cancelled) setResults(hits.slice(0, MAX_RESULTS));
+        const hits = empty ? await listNotes() : (await searchNotes(query)).slice(0, MAX_RESULTS);
+        if (!cancelled) setResults(hits);
       } catch (err) {
         console.error("search failed:", err);
         if (!cancelled) setResults([]);
       } finally {
-        if (!cancelled) setSearched(true);
+        // `searched` stays false for the empty query: zero notes then reads
+        // as "nothing here yet", not "no matches".
+        if (!cancelled) setSearched(!empty);
       }
     })();
     return () => {
@@ -90,6 +95,19 @@ export function SearchView({ onClose }: SearchViewProps) {
     if (event.key === "Enter") {
       event.preventDefault();
       if (selectedNote) openNote(selectedNote.id); // T7 editor overlays; Esc returns here
+      return;
+    }
+    // ⌘⌫ deletes the selected hit — file to the macOS Trash, row out of the
+    // index (T4). metaKey-guarded, so bare Backspace still edits the query.
+    // Optimistic removal, like the tasks view's markDone: the command already
+    // dropped the index row, so the list and the index agree.
+    if (isDeleteChord(event)) {
+      event.preventDefault();
+      if (selectedNote) {
+        void deleteNote(selectedNote.id)
+          .then(() => setResults((prev) => prev.filter((n) => n.id !== selectedNote.id)))
+          .catch((err) => console.error("delete note failed:", err));
+      }
       return;
     }
     if (event.key === "Escape") {
@@ -127,7 +145,7 @@ export function SearchView({ onClose }: SearchViewProps) {
       />
       {results.length === 0 ? (
         <div className="tasks-empty under-input">
-          {searched ? "no matches" : "type to search"}
+          {searched ? "no matches" : "no notes yet"}
         </div>
       ) : (
         <ul className="tasks-list under-input" role="listbox" aria-label="search results">

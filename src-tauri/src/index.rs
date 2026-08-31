@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS notes (
   title    TEXT NOT NULL,
   done     INTEGER,
   deadline TEXT,
-  alert    TEXT
+  alert    TEXT,
+  modified INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS tags (
   note_id TEXT NOT NULL,
@@ -48,6 +49,21 @@ pub fn open_db(db_path: &Path) -> Result<Connection> {
     }
     let conn = Connection::open(db_path)?;
     conn.execute_batch(SCHEMA)?;
+    // Migration (T5): dbs created before the `modified` column existed pass
+    // the CREATE TABLE IF NOT EXISTS above untouched, so add the column here.
+    // The startup reindex is a full drop-and-rescan, which then fills in real
+    // mtimes over the 0 default.
+    let has_modified: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('notes') WHERE name = 'modified'",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_modified == 0 {
+        conn.execute(
+            "ALTER TABLE notes ADD COLUMN modified INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
     Ok(conn)
 }
 
@@ -135,9 +151,18 @@ pub fn reindex(conn: &Connection, vault_dir: &Path) -> Result<usize> {
             .trim()
             .to_string();
         let done: Option<bool> = data.get("done").map(|v| v == "true");
+        // File mtime in unix millis: the sort key for the all-notes listing.
+        // Integer millis compare correctly with plain ORDER BY; a file whose
+        // mtime cannot be read sorts to the end rather than failing the scan.
+        let modified: i64 = std::fs::metadata(&path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
         tx.execute(
-            "INSERT OR REPLACE INTO notes (id, path, kind, created, title, done, deadline, alert)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT OR REPLACE INTO notes (id, path, kind, created, title, done, deadline, alert, modified)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 id,
                 path.to_string_lossy(),
@@ -147,6 +172,7 @@ pub fn reindex(conn: &Connection, vault_dir: &Path) -> Result<usize> {
                 done,
                 data.get("deadline"),
                 data.get("alert"),
+                modified,
             ],
         )?;
         for tag in tags {
@@ -163,6 +189,25 @@ pub fn reindex(conn: &Connection, vault_dir: &Path) -> Result<usize> {
     }
     tx.commit()?;
     Ok(count)
+}
+
+/// The indexed file path for a note id, if the note is indexed.
+pub fn note_path(conn: &Connection, id: &str) -> Result<Option<String>> {
+    use rusqlite::OptionalExtension;
+    conn.query_row("SELECT path FROM notes WHERE id = ?1", [id], |r| r.get(0))
+        .optional()
+}
+
+/// Drops one note's rows from the index (notes, tags, notes_fts). Index-only:
+/// the file on disk is untouched — T4's delete command moves it to the Trash
+/// first, then calls this so lists refresh without waiting for the watcher.
+/// An unknown id is a no-op.
+pub fn remove_note(conn: &Connection, id: &str) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("DELETE FROM notes WHERE id = ?1", [id])?;
+    tx.execute("DELETE FROM tags WHERE note_id = ?1", [id])?;
+    tx.execute("DELETE FROM notes_fts WHERE id = ?1", [id])?;
+    tx.commit()
 }
 
 pub fn note_count(conn: &Connection) -> Result<i64> {
@@ -233,6 +278,21 @@ pub fn search_notes(conn: &Connection, text: &str) -> Result<Vec<NoteRow>> {
     ))?;
     let mut out = Vec::new();
     let mut q = stmt.query(params![fts_query, like])?;
+    while let Some(row) = q.next()? {
+        out.push(row_to_note(conn, row)?);
+    }
+    Ok(out)
+}
+
+/// Every note in the index, most recently modified (file mtime) first.
+/// Serves the search view's empty query (T5): the full vault listing comes
+/// from the index, never from a per-keystroke vault directory scan.
+pub fn list_all_notes(conn: &Connection) -> Result<Vec<NoteRow>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {NOTE_COLS} FROM notes ORDER BY modified DESC, created DESC"
+    ))?;
+    let mut out = Vec::new();
+    let mut q = stmt.query([])?;
     while let Some(row) = q.next()? {
         out.push(row_to_note(conn, row)?);
     }
@@ -384,10 +444,123 @@ pub fn spawn_watcher(
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_vault_dir, LEGACY_VAULT_DIR_NAME};
+    use super::{
+        list_all_notes, open_db, reindex, remove_note, resolve_vault_dir, LEGACY_VAULT_DIR_NAME,
+    };
     use std::path::PathBuf;
 
     const OVERRIDE: &str = "STASH_VAULT_DIR";
+
+    /// `remove_note` drops exactly one note's rows from all three tables
+    /// (notes, tags, notes_fts) and leaves the other notes — and the files on
+    /// disk — untouched. It is the index half of T4 deletion; moving the file
+    /// to the Trash is the command's job, not this function's.
+    #[test]
+    fn remove_note_drops_all_index_rows_for_that_note_only() {
+        let dir = std::env::temp_dir().join(format!(
+            "stash-remove-note-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("a.md"),
+            "---\nid: a\nkind: task\ncreated: 2026-08-30T10:00:00\ntags: [work]\n---\nbuy milk\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("b.md"),
+            "---\nid: b\nkind: note\ncreated: 2026-08-30T11:00:00\n---\nkeep me\n",
+        )
+        .unwrap();
+
+        let conn = open_db(&dir.join("index.db")).unwrap();
+        assert_eq!(reindex(&conn, &dir).unwrap(), 2);
+
+        remove_note(&conn, "a").unwrap();
+
+        let ids = |sql: &str| -> Vec<String> {
+            let mut stmt = conn.prepare(sql).unwrap();
+            let rows = stmt
+                .query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            rows
+        };
+        assert_eq!(ids("SELECT id FROM notes ORDER BY id"), vec!["b"]);
+        assert_eq!(ids("SELECT id FROM notes_fts ORDER BY id"), vec!["b"]);
+        assert!(ids("SELECT note_id FROM tags").is_empty());
+        // Index-only: both files are still on disk.
+        assert!(dir.join("a.md").is_file());
+        assert!(dir.join("b.md").is_file());
+
+        // Removing an id that isn't indexed is a no-op, not an error: the
+        // watcher may have already reindexed a deletion away.
+        remove_note(&conn, "ghost").unwrap();
+        assert_eq!(ids("SELECT id FROM notes ORDER BY id"), vec!["b"]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The empty-search listing: every note, newest file mtime first (T5).
+    /// mtimes are made distinct by writing the files in order with a pause —
+    /// no dep on a set-mtime crate; APFS mtime resolution is far finer than
+    /// the 25ms gap.
+    #[test]
+    fn list_all_notes_orders_by_mtime_desc() {
+        let dir = scratch_home("list-all");
+        let vault = dir.join("vault");
+        std::fs::create_dir_all(&vault).unwrap();
+        for name in ["first", "second", "third"] {
+            std::fs::write(
+                vault.join(format!("{name}.md")),
+                format!("---\nkind: note\ncreated: 2026-01-01T00:00:00Z\n---\n{name} body\n"),
+            )
+            .unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        // Rewrite `first` so its mtime becomes the newest: the expected order
+        // (first, third, second) then differs from both write order and the
+        // identical `created` values — only an mtime sort produces it.
+        std::fs::write(
+            vault.join("first.md"),
+            "---\nkind: note\ncreated: 2026-01-01T00:00:00Z\n---\nfirst body updated\n",
+        )
+        .unwrap();
+
+        let conn = open_db(&dir.join("index.db")).unwrap();
+        assert_eq!(reindex(&conn, &vault).unwrap(), 3);
+        let notes = list_all_notes(&conn).unwrap();
+        let ids: Vec<&str> = notes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(ids, ["first", "third", "second"]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A db created before the `modified` column existed still opens: open_db
+    /// must add the column so the all-notes query never hits "no such column".
+    #[test]
+    fn open_db_migrates_pre_modified_schema() {
+        let dir = scratch_home("migrate");
+        let db_path = dir.join("index.db");
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE notes (
+                   id TEXT PRIMARY KEY, path TEXT NOT NULL, kind TEXT NOT NULL,
+                   created TEXT NOT NULL, title TEXT NOT NULL,
+                   done INTEGER, deadline TEXT, alert TEXT
+                 );",
+            )
+            .unwrap();
+        }
+        let conn = open_db(&db_path).unwrap();
+        // The column exists and the all-notes query runs.
+        assert!(list_all_notes(&conn).unwrap().is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn scratch_home(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(

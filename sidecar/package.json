@@ -10,6 +10,7 @@
     "mcp:demo": "tsx scripts/mcp-demo.ts",
     "enrich:demo": "tsx scripts/enrich-demo.ts",
     "chat:demo": "tsx scripts/chat-demo.ts",
+    "test": "node --import tsx --test src/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
