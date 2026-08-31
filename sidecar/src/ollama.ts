@@ -557,9 +557,13 @@ export interface OllamaStatus {
  * UI renders, not an error. Any failure — refused connection, timeout
  * (default 1500ms, kept short so a probe can't hang the settings view),
  * non-200, malformed body — is `{reachable: false, models: []}`.
+ *
+ * Defaults through ollamaBaseUrl() — the SAME helper the prompt/chat traffic
+ * uses (honoring STASH_OLLAMA_URL) — so the settings status line and actual
+ * traffic can never diverge (T7 audit fix).
  */
 export async function probeOllama(
-  baseUrl: string = OLLAMA_BASE_URL,
+  baseUrl: string = ollamaBaseUrl(),
   timeoutMs = 1500,
 ): Promise<OllamaStatus> {
   try {
