@@ -18,6 +18,8 @@ use tauri::{
     AppHandle, Manager, RunEvent, State,
 };
 use tauri_nspanel::{tauri_panel, ManagerExt, WebviewWindowExt};
+// Aliased: `ManagerExt` is already taken by tauri_nspanel above.
+use tauri_plugin_autostart::ManagerExt as AutostartManagerExt;
 use tauri_plugin_global_shortcut::{Shortcut, ShortcutState};
 
 /// Global shortcut that toggles overlay visibility.
@@ -1003,6 +1005,39 @@ fn set_llm_config(app: AppHandle, provider: String, model: String) -> Result<(),
     })
 }
 
+// --- Autostart (launch at login, T1) ------------------------------------------
+//
+// tauri-plugin-autostart registers the app as a macOS Launch Agent (see the
+// `MacosLauncher::LaunchAgent` init in `run`). The plugin — i.e. macOS — is
+// the live authority on whether login starts the app; config.json's
+// `autostart` key is only the persisted mirror of the user's choice, written
+// through the same merge-writer as `vaultDir`/`llm` so no key can clobber
+// another (covered by llm_config's merge tests).
+
+/// The plugin's live `is_enabled()`: what macOS will actually do at login,
+/// not the config.json mirror.
+#[tauri::command]
+fn get_autostart(app: AppHandle) -> Result<bool, String> {
+    app.autolaunch().is_enabled().map_err(|e| e.to_string())
+}
+
+/// Flips launch-at-login via the plugin AND persists `{"autostart": bool}`
+/// into `~/.config/stash/config.json`. Plugin call first: if macOS refuses,
+/// nothing is persisted and the file keeps describing reality.
+#[tauri::command]
+fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let autolaunch = app.autolaunch();
+    if enabled {
+        autolaunch.enable().map_err(|e| e.to_string())?;
+    } else {
+        autolaunch.disable().map_err(|e| e.to_string())?;
+    }
+    let home = app.path().home_dir().map_err(|e| e.to_string())?;
+    llm_config::update_config_json(&home, |root| {
+        root.insert("autostart".into(), serde_json::Value::Bool(enabled));
+    })
+}
+
 // --- Sidecar (Node agent process, see sidecar/README.md) ---------------------
 //
 // Spawned on app setup, killed on app exit. Line-delimited JSON over stdio:
@@ -1472,6 +1507,13 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_nspanel::init())
         .plugin(tauri_plugin_notification::init())
+        // Launch-at-login as a macOS Launch Agent (the per-user, no-admin
+        // mechanism); no extra launch args. Flipped/read at runtime through
+        // the get_autostart/set_autostart commands below.
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_shortcuts([TOGGLE_OVERLAY_SHORTCUT, TASKS_VIEW_SHORTCUT])
@@ -1507,6 +1549,8 @@ pub fn run() {
             set_vault_dir,
             get_llm_config,
             set_llm_config,
+            get_autostart,
+            set_autostart,
             claude_auth_status,
             ollama_status,
             vault_read_file,
