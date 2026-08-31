@@ -151,6 +151,19 @@ and leaves the regenerated set in `src-tauri/icons/`. Review and commit the
 changed files under `src-tauri/icons/`. Rerun anytime the source changes — it
 is idempotent.
 
+## Environment overrides
+
+Runtime overrides the app (and its sidecar) honor; useful when testing a
+build against non-default LLM endpoints:
+
+- `STASH_MODEL` — overrides the configured model on the Claude path
+  (precedence: explicit per-call model > `STASH_MODEL` > configured model >
+  default).
+- `STASH_OLLAMA_URL` — the Ollama daemon URL (default
+  `http://localhost:11434`). The settings probe and the actual prompt/chat
+  traffic resolve through the same helper, so the status line and real
+  traffic always agree.
+
 ## Known limitations
 
 - **The Node sidecar is NOT bundled into the .app.** The app spawns it via

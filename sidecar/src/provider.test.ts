@@ -133,6 +133,29 @@ test("probeOllama returns the model list from /api/tags", async () => {
   }
 });
 
+test("probeOllama's default base URL honors STASH_OLLAMA_URL like the traffic paths", async () => {
+  const server = http.createServer((req, res) => {
+    assert.equal(req.url, "/api/tags");
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ models: [{ name: "from-env:1b" }] }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address !== null && typeof address === "object");
+  const saved = process.env["STASH_OLLAMA_URL"];
+  try {
+    process.env["STASH_OLLAMA_URL"] = `http://127.0.0.1:${address.port}`;
+    // No explicit URL: the probe must resolve through ollamaBaseUrl(), the
+    // same helper the prompt/chat paths use — status and traffic can't diverge.
+    const status = await probeOllama();
+    assert.deepEqual(status, { reachable: true, models: ["from-env:1b"] });
+  } finally {
+    if (saved === undefined) delete process.env["STASH_OLLAMA_URL"];
+    else process.env["STASH_OLLAMA_URL"] = saved;
+    server.close();
+  }
+});
+
 test("probeOllama reports unreachable instead of throwing when the daemon is down", async () => {
   // Grab a port the OS just released: nothing is listening on it.
   const server = http.createServer();

@@ -5,12 +5,14 @@
 // Rust side and the sidecar has no DB layer — at PoC vault sizes (hundreds of
 // notes) reading every .md per search is fine, and it can never be stale.
 //
-// The parsing/normalizing helpers mirror mcp.ts, which keeps its own private
-// copies: mcp.ts is an ENTRY POINT (it connects its stdio server at import
-// time), so importing it from here would start an MCP server inside every
-// chat process. Copying ~60 lines beats that; a shared module extraction is a
-// refactor deliberately not done in this task.
-import { readFile, readdir } from "node:fs/promises";
+// The parsing helpers mirror mcp.ts, which keeps its own private copies:
+// mcp.ts is an ENTRY POINT (it connects its stdio server at import time), so
+// importing it from here would start an MCP server inside every chat process.
+// The reverse direction is safe — this module has no import-time side effects
+// — so mcp.ts imports the path-confinement helper (confineNotePath) from
+// here: security logic must not drift between the two call sites (T7).
+import { readFile, readdir, realpath } from "node:fs/promises";
+import { basename, dirname, sep } from "node:path";
 
 type FrontmatterValue = string | boolean | string[];
 
@@ -79,6 +81,51 @@ export function notePath(vaultDir: string, idOrPath: string): string {
     throw new Error(`note path escapes vault dir: ${idOrPath}`);
   }
   return resolved;
+}
+
+/**
+ * Where `path` actually lands once symlinks resolve: fs.realpath of its
+ * deepest EXISTING ancestor (usually the path itself — for reads the note
+ * either exists or the read ENOENTs naturally) with the non-existing tail
+ * re-appended verbatim.
+ */
+async function resolveThroughSymlinks(path: string): Promise<string> {
+  let current = path;
+  let tail = "";
+  for (;;) {
+    try {
+      return (await realpath(current)) + tail;
+    } catch {
+      const parent = dirname(current);
+      if (parent === current) return path; // nothing along the way exists
+      tail = sep + basename(current) + tail;
+      current = parent;
+    }
+  }
+}
+
+/**
+ * notePath hardened against symlinks: the string check stays as the first
+ * line (cheap, clear errors), then both the vault root and the candidate are
+ * realpath-resolved and the containment re-checked — so a symlink placed
+ * INSIDE the vault can no longer reach files outside it. Async because
+ * realpath is; used by every actual vault read (and any future write).
+ */
+export async function confineNotePath(vaultDir: string, idOrPath: string): Promise<string> {
+  const candidate = notePath(vaultDir, idOrPath);
+  let realRoot: string;
+  try {
+    realRoot = await realpath(vaultDir);
+  } catch {
+    // Vault root missing/unreadable: nothing exists under it, so the read
+    // ENOENTs naturally with its usual friendly error.
+    return candidate;
+  }
+  const resolved = await resolveThroughSymlinks(candidate);
+  if (resolved !== realRoot && !resolved.startsWith(realRoot + sep)) {
+    throw new Error(`note path escapes vault dir: ${idOrPath}`);
+  }
+  return candidate;
 }
 
 async function listVaultNotes(vaultDir: string): Promise<VaultNote[]> {
@@ -175,7 +222,7 @@ export async function readVaultNote(
   vaultDir: string,
   idOrPath: string,
 ): Promise<{ path: string; frontmatter: Record<string, FrontmatterValue>; body: string }> {
-  const path = notePath(vaultDir, idOrPath);
+  const path = await confineNotePath(vaultDir, idOrPath);
   let raw: string;
   try {
     raw = await readFile(path, "utf8");

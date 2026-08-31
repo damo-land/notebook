@@ -1,7 +1,7 @@
 // Vault helpers for the ollama chat tools (T3): keyword search + single-note
 // read over a real (temp) directory of markdown notes.
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -49,5 +49,30 @@ test("readVaultNote: by id and by path; escapes are rejected; missing is friendl
     await assert.rejects(() => readVaultNote(dir, "nope"), /not found/);
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("readVaultNote: symlinks escaping the vault are rejected", async (t) => {
+  const dir = await makeVault();
+  const outside = await mkdtemp(join(tmpdir(), "stash-vault-outside-"));
+  try {
+    await writeFile(join(outside, "secret.md"), "outside the vault\n");
+    try {
+      await symlink(join(outside, "secret.md"), join(dir, "sneaky.md"));
+      await symlink(outside, join(dir, "linkdir"));
+    } catch (err) {
+      t.skip(`filesystem does not support symlinks: ${(err as Error).message}`);
+      return;
+    }
+    // A symlinked FILE pointing out of the vault…
+    await assert.rejects(() => readVaultNote(dir, "sneaky"), /escapes/);
+    // …and a traversal THROUGH a symlinked directory.
+    await assert.rejects(() => readVaultNote(dir, "linkdir/secret.md"), /escapes/);
+    // Honest reads keep working alongside the hostile links.
+    const ok = await readVaultNote(dir, "20260102-000000-tires");
+    assert.ok(ok.body.includes("Winter tires"));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
   }
 });
