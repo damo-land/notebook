@@ -260,4 +260,74 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&home);
     }
+
+    /// The `autostart` key (T1's set_autostart) round-trips through the same
+    /// merge-writer without clobbering `vaultDir`/`llm` — and writing those
+    /// afterwards preserves `autostart` right back.
+    #[test]
+    fn update_config_json_autostart_round_trips_without_clobbering() {
+        let home = scratch_home("autostart");
+
+        write_config(
+            &home,
+            r#"{"vaultDir": "~/Vaults/work", "llm": {"provider": "ollama", "model": "llama3.2:3b"}}"#,
+        );
+        // autostart on, then off: both writes must leave the other keys alone.
+        for enabled in [true, false] {
+            update_config_json(&home, |root| {
+                root.insert("autostart".into(), serde_json::Value::Bool(enabled));
+            })
+            .unwrap();
+            let raw = std::fs::read_to_string(config_path(&home)).unwrap();
+            let root: serde_json::Value = serde_json::from_str(&raw).unwrap();
+            assert_eq!(root["autostart"], enabled);
+            assert_eq!(root["vaultDir"], "~/Vaults/work");
+            assert_eq!(root["llm"]["provider"], "ollama");
+            assert_eq!(root["llm"]["model"], "llama3.2:3b");
+        }
+
+        // …and the other direction: re-pointing the vault / switching the LLM
+        // must not drop the persisted autostart choice.
+        update_config_json(&home, |root| {
+            root.insert("vaultDir".into(), serde_json::json!("~/Vaults/personal"));
+        })
+        .unwrap();
+        update_config_json(&home, |root| {
+            root.insert(
+                "llm".into(),
+                serde_json::json!({"provider": "claude", "model": "claude-haiku-4-5"}),
+            );
+        })
+        .unwrap();
+        let raw = std::fs::read_to_string(config_path(&home)).unwrap();
+        let root: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(root["autostart"], false);
+        assert_eq!(root["vaultDir"], "~/Vaults/personal");
+        assert_eq!(root["llm"]["provider"], "claude");
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// NOT a live smoke. `app.autolaunch()` needs a real `AppHandle` — the
+    /// plugin's manager is built from the running app's bundle identity, and
+    /// tauri's mock runtime sits behind the unapproved `test` feature — so
+    /// login-item registration (machine state anyway, not CI material) can
+    /// only be exercised in the running app:
+    ///
+    ///   1. `npm run tauri dev`
+    ///   2. invoke `set_autostart` with `enabled: true` from the webview
+    ///      console: `window.__TAURI__` or the settings UI once T2 lands
+    ///   3. check `~/Library/LaunchAgents/` for the app's plist and
+    ///      `get_autostart` -> true; then disable and re-check both.
+    ///
+    /// Kept `#[ignore]`d so `cargo test -- --ignored` surfaces this note
+    /// instead of silently passing nothing.
+    #[test]
+    #[ignore = "live autolaunch smoke needs a running app handle; see doc comment for the manual steps"]
+    fn autostart_smoke() {
+        eprintln!(
+            "autostart_smoke: no live plugin call here — run the app and flip \
+             set_autostart manually (see this test's doc comment)."
+        );
+    }
 }
