@@ -1,6 +1,6 @@
 # Stash: launch at login
 
-Status: draft
+Status: done
 Source: stash is a resident hotkey overlay but must be manually launched after
 every login — a background utility that isn't there when summoned is broken.
 
@@ -40,7 +40,9 @@ signed anyway.
 
 ### T2: Checkbox in wizard + settings
 - Type: ship
-- Status: checking
+- Status: landed
+- Checkers: round 2 (post-fix) behavioral PASS / audit PASS — flags: none; round 1 PASS/PASS reopened at land for consent race + retry jam, both fixed. See docs/reports/stash-autostart-t2-check.md
+- Checkers: behavioral PASS / audit PASS — flags: settings-mode consent race (probe-before-render default-ON), wizard partial-failure jam, arrows-don't-reach (cosmetic). See docs/reports/stash-autostart-t2-check.md
 - Branch: anchor/stash-autostart-t2
 - Escalation: none
 - Acceptance criteria:
@@ -50,6 +52,8 @@ signed anyway.
   - The keyboard flow still works: the checkbox is reachable via the existing field-cycling (Tab/arrows), toggles with Space/Enter-appropriate key, and the save ordering remains strictly sequential with the other config writes (no concurrent config-file writers).
   - `src/lib/settings-flow.ts` models the new field and `scripts/settings-flow-demo.ts` gains asserts for: default-checked wizard save payload includes autostart=true, unchecked path, settings-mode toggle payload; demo runs green via `npx tsx`.
   - Root `npm run typecheck` passes; `cargo test` in `src-tauri` passes; sidecar untouched (`git diff` shows no `sidecar/` changes).
+  - In settings mode the checkbox never shows a value that didn't come from `get_autostart`: until the probe resolves it renders unchecked-and-disabled (or an explicit loading state), a failed probe leaves it disabled with the existing error line, and `savePlan` treats a `null` initial value as "no change" — so an untouched checkbox can never emit a `set_autostart` action. Demo asserts the null-initial no-action case.
+  - A wizard ai-step where `set_autostart` rejects after `set_llm_config` succeeded shows the error AND still allows immediate retry via Enter without duplicating side effects (re-running the llm write is acceptable — it's idempotent; assert in the demo that the retry plan is stable).
 
 ## Holds
 <!-- decision forks recorded by agents; user resolves at /anchor:land -->
