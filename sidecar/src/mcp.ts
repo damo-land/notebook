@@ -9,6 +9,10 @@ import { homedir } from "node:os";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+// Safe direction: vault.ts has no import-time side effects. Path confinement
+// is SHARED with the chat tools (T7) so the symlink-hardened check can't
+// drift between the two call sites; the parsing helpers below stay copies.
+import { confineNotePath } from "./vault.ts";
 
 // --- minimal read-only vault access (frontmatter format mirrors src/lib/vault) ---
 
@@ -75,31 +79,6 @@ async function resolveVaultDir(): Promise<string> {
     // no legacy dir -> default
   }
   return `${home}/Stash`;
-}
-
-/** Collapses `.`/`..`/empty segments; `..` at the root is preserved. */
-function normalizeSegments(path: string): string {
-  const segs: string[] = [];
-  for (const seg of path.split("/")) {
-    if (seg === "" || seg === ".") continue;
-    if (seg === ".." && segs.length > 0 && segs[segs.length - 1] !== "..") {
-      segs.pop();
-      continue;
-    }
-    segs.push(seg);
-  }
-  return (path.startsWith("/") ? "/" : "") + segs.join("/");
-}
-
-/** Resolves a note id or path to a normalized path INSIDE vaultDir; throws on escape. */
-function notePath(vaultDir: string, idOrPath: string): string {
-  const root = normalizeSegments(vaultDir);
-  const raw = idOrPath.endsWith(".md") || idOrPath.includes("/") ? idOrPath : `${idOrPath}.md`;
-  const resolved = normalizeSegments(raw.startsWith("/") ? raw : `${root}/${raw}`);
-  if (resolved !== root && !resolved.startsWith(`${root}/`)) {
-    throw new Error(`note path escapes vault dir: ${idOrPath}`);
-  }
-  return resolved;
 }
 
 async function listVaultNotes(vaultDir: string): Promise<VaultNote[]> {
@@ -186,7 +165,7 @@ server.registerTool(
   },
   async ({ id_or_path }) => {
     const vaultDir = await resolveVaultDir();
-    const path = notePath(vaultDir, id_or_path);
+    const path = await confineNotePath(vaultDir, id_or_path);
     const raw = await readFile(path, "utf8");
     const { data, body } = parseNoteFile(raw);
     return textResult({ path, frontmatter: data, body });
