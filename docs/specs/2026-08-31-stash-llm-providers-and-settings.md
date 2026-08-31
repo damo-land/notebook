@@ -1,6 +1,6 @@
 # Stash: LLM provider choice + mature settings
 
-Status: draft
+Status: done
 Source: LLM features are Claude-only and invisible — no provider/model choice,
 settings is a bare input box, testers without Claude subscriptions get no
 chat/enrichment, and the app icon is a placeholder.
@@ -119,8 +119,9 @@ a hold instead of burning build rounds.
 
 ### T7: Realpath-confine vault reads + probe URL unification
 - Type: ship
-- Status: todo
-- Branch: —
+- Status: landed
+- Checkers: behavioral PASS / audit PASS — flags: listing paths (search/list_recent) still follow symlinks (residual gap, follow-up recommended); TOCTOU low-severity accepted. See docs/reports/stash-llm-providers-and-settings-t7-check.md
+- Branch: anchor/stash-llm-providers-and-settings-t7
 - Escalation: none
 - Acceptance criteria:
   - Added 2026-08-31 at land from T3/T4 audit flags (see docs/reports/stash-llm-providers-and-settings-t3-check.md and -t4-check.md).
@@ -128,6 +129,31 @@ a hold instead of burning build rounds.
   - `probeOllama` resolves its base URL through the same `ollamaBaseUrl()` helper as the prompt/chat paths (honoring `STASH_OLLAMA_URL`), so the settings status line and actual traffic can never diverge; existing probe tests updated accordingly.
   - `STASH_OLLAMA_URL` and `STASH_MODEL` overrides get a short "Environment overrides" note in `docs/release.md`.
   - Root + sidecar `npm run typecheck`, sidecar `npm test`, and `cargo test` in `src-tauri` all pass; no new dependencies.
+
+### T8: Symlink-safe vault listing
+- Type: ship
+- Status: landed
+- Checkers: behavioral PASS / audit PASS — flags: Rust reindex is the class's third instance (own-UI index only; final fix candidate); intentional symlinked-note skip documented. See docs/reports/stash-llm-providers-and-settings-t8-check.md
+- Branch: anchor/stash-llm-providers-and-settings-t8
+- Escalation: none
+- Acceptance criteria:
+  - Added 2026-08-31 at land from T7's audit flag (docs/reports/stash-llm-providers-and-settings-t7-check.md): listing paths still follow symlinks.
+  - `listVaultNotes` in `sidecar/src/vault.ts` and the equivalent enumeration in `sidecar/src/mcp.ts` (backing `search_notes`, `list_tasks`, `list_recent`) no longer read through symlinked entries: each directory entry is `lstat`ed and symlinks are skipped (or realpath-confined via the existing `confineNotePath` — pick one mechanism, use it in both modules, prefer the shared-helper pattern T7 established).
+  - Unit tests in `vault.test.ts` and `mcp.test.ts` (same style as T7's: scratch vault, symlinked .md pointing outside, graceful `t.skip` without symlink support) assert the outside file's content appears in NO search result, snippet, or listing title.
+  - Honest (non-symlink) notes still list/search exactly as before — existing tests unchanged and green.
+  - Root + sidecar `npm run typecheck`, sidecar `npm test`, `cargo test` in `src-tauri` all pass; no new dependencies.
+
+### T9: Symlink-safe Rust reindex
+- Type: ship
+- Status: landed
+- Checkers: behavioral PASS / audit PASS — flags: none
+- Branch: anchor/stash-llm-providers-and-settings-t9
+- Escalation: none
+- Acceptance criteria:
+  - Added 2026-08-31 at land from T8's audit flag (docs/reports/stash-llm-providers-and-settings-t8-check.md): `reindex` in `src-tauri/src/index.rs` (~lines 122-140) filters entries with `Path::is_file()`, which follows symlinks — a symlinked `.md` pointing outside the vault gets its content indexed into `notes`/`notes_fts`.
+  - `reindex` skips symlinked directory entries: check via `std::fs::symlink_metadata` (or `DirEntry::file_type()`, which does not follow symlinks) before reading; only regular files with `.md` extension are indexed.
+  - A Rust unit test in `index.rs`'s test module creates a scratch vault with an honest note plus a symlinked `.md` pointing at an outside file with distinctive content, runs `reindex`, and asserts the index contains the honest note but no row/FTS hit with the outside content (use `#[cfg(unix)]` + `std::os::unix::fs::symlink`; skip/no-op on platforms without it).
+  - `cargo test` in `src-tauri` passes (existing tests unchanged); root + sidecar `npm run typecheck` and sidecar `npm test` still pass; no new dependencies.
 
 ## Holds
 <!-- decision forks recorded by agents; user resolves at /anchor:land -->
