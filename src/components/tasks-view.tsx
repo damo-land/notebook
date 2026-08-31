@@ -30,7 +30,7 @@ import {
 } from "../lib/task-list";
 
 /** localStorage key for the persisted category filter (survives restarts). */
-const CATEGORY_STORAGE_KEY = "notebook.tasks-view.category";
+const CATEGORY_STORAGE_KEY = "stash.tasks-view.category";
 
 function loadStoredCategory(): string {
   try {

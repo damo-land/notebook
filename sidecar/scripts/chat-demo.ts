@@ -149,7 +149,7 @@ const KEYWORD = "zarbolyte";
 const TARGET_ID = "20260815-120000-zarbolyte-cache";
 
 async function seedVault(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), "notebook-chat-demo-"));
+  const dir = await mkdtemp(join(tmpdir(), "stash-chat-demo-"));
   await writeFile(
     join(dir, `${TARGET_ID}.md`),
     `---
@@ -267,6 +267,7 @@ async function ask(
 
 // --- scoping assertions, run against whatever options a turn actually used ----
 
+// "NotebookEdit" is a Claude Agent SDK tool name (Jupyter notebook editing), not the old app name.
 const WRITE_TOOLS = ["Write", "Edit", "MultiEdit", "NotebookEdit", "Bash", "WebFetch", "WebSearch"];
 
 function assertScoping(opts: RunPromptOptions, vaultDir: string): void {
@@ -339,7 +340,7 @@ function assertViewOverwrite(turn: Asked, tag: string): void {
   const stream = turn.deltas.join("");
   const opened: ChatTurn[] = [
     { role: "you", text: question },
-    { role: "notebook", text: "", streaming: true },
+    { role: "stash", text: "", streaming: true },
   ];
   let view = opened;
   for (const delta of turn.deltas) view = appendDelta(view, delta);

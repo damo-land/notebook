@@ -7,13 +7,13 @@
 //!
 //! Run with: cargo test --test search_notes -- --nocapture
 
-use notebook_lib::index::{open_db, reindex, search_notes};
+use stash_lib::index::{open_db, reindex, search_notes};
 use std::fs;
 use std::path::PathBuf;
 
 fn scratch_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
-        "notebook-search-test-{name}-{}",
+        "stash-search-test-{name}-{}",
         std::process::id()
     ));
     let _ = fs::remove_dir_all(&dir);
@@ -25,7 +25,7 @@ fn write_note(vault: &PathBuf, name: &str, fm: &str, body: &str) {
     fs::write(vault.join(name), format!("---\n{fm}\n---\n{body}")).unwrap();
 }
 
-fn ids(rows: &[notebook_lib::index::NoteRow]) -> Vec<String> {
+fn ids(rows: &[stash_lib::index::NoteRow]) -> Vec<String> {
     rows.iter().map(|r| r.id.clone()).collect()
 }
 

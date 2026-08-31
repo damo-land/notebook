@@ -118,7 +118,7 @@ export function ChatView({ turns, setTurns, session, setSession, onClose }: Chat
     setTurns((prev) => [
       ...prev,
       { role: "you", text },
-      { role: "notebook", text: "", streaming: true },
+      { role: "stash", text: "", streaming: true },
     ]);
     try {
       const reply = await invoke<ChatReply>("chat_send", { text, session, turn });

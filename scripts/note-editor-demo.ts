@@ -20,7 +20,7 @@ const fs: VaultFs = {
 };
 
 async function main() {
-  const vaultDir = await nodeFs.mkdtemp(path.join(os.tmpdir(), "notebook-editor-"));
+  const vaultDir = await nodeFs.mkdtemp(path.join(os.tmpdir(), "stash-editor-"));
   console.log("vault dir:", vaultDir);
 
   // Note with every frontmatter field the editor must not disturb.

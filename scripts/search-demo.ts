@@ -37,7 +37,7 @@ function split(raw: string): { frontmatter: string; body: string } {
 }
 
 async function main() {
-  const vaultDir = await nodeFs.mkdtemp(path.join(os.tmpdir(), "notebook-search-"));
+  const vaultDir = await nodeFs.mkdtemp(path.join(os.tmpdir(), "stash-search-"));
   console.log("vault dir:", vaultDir);
 
   // (A) matches "borrow" by body text.

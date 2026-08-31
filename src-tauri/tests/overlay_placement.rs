@@ -7,7 +7,7 @@
 //! factor, and the cursor scaled by the primary's factor — so the 2x case is
 //! where a logical/physical mix-up stops being invisible.
 
-use notebook_lib::placement::{
+use stash_lib::placement::{
     cursor_points, monitor_rect_points, overlay_origin, pick_monitor, Rect, OVERLAY_TOP_FRACTION,
 };
 

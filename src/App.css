@@ -417,7 +417,7 @@ body {
   color: var(--text-tertiary);
 }
 
-.chat-turn-notebook .chat-role {
+.chat-turn-stash .chat-role {
   color: var(--text-secondary);
 }
 

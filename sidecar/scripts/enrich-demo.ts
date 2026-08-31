@@ -147,7 +147,7 @@ async function seedNote(
 const PUBLIC_URL = "https://example.com";
 
 async function scenarioMain(): Promise<void> {
-  const vaultDir = await mkdtemp(join(tmpdir(), "notebook-enrich-demo-"));
+  const vaultDir = await mkdtemp(join(tmpdir(), "stash-enrich-demo-"));
   console.log(`\n=== scenario: knowledge note + public URL (${real ? "REAL LLM" : "stubbed"}) ===`);
   console.log("vault dir:", vaultDir);
 
@@ -367,7 +367,7 @@ async function scenarioMain(): Promise<void> {
 // --- scenario 2: the link cap actually clamps (stub only, no spend) ----------
 
 async function scenarioLinkCap(): Promise<void> {
-  const vaultDir = await mkdtemp(join(tmpdir(), "notebook-enrich-cap-"));
+  const vaultDir = await mkdtemp(join(tmpdir(), "stash-enrich-cap-"));
   console.log("\n=== scenario: wiki-link cap ===");
   try {
     const notePath = await seedNote(
@@ -434,7 +434,7 @@ async function scenarioLinkCap(): Promise<void> {
 // --- scenario 3: failure safety (stub only, no spend) ------------------------
 
 async function scenarioFailureSafe(): Promise<void> {
-  const vaultDir = await mkdtemp(join(tmpdir(), "notebook-enrich-fail-"));
+  const vaultDir = await mkdtemp(join(tmpdir(), "stash-enrich-fail-"));
   console.log("\n=== scenario: failure safety ===");
   try {
     const notePath = await seedNote(
@@ -512,7 +512,7 @@ async function strayFiles(vaultDir: string): Promise<string[]> {
 }
 
 async function scenarioConcurrentWrite(): Promise<void> {
-  const vaultDir = await mkdtemp(join(tmpdir(), "notebook-enrich-race-"));
+  const vaultDir = await mkdtemp(join(tmpdir(), "stash-enrich-race-"));
   console.log("\n=== scenario: concurrent write during the job (compare-and-swap) ===");
   try {
     const notePath = await seedNote(

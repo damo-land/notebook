@@ -15,7 +15,7 @@
 # The overlay is normally shown by a global hotkey (alt+space), and synthesising
 # a hotkey from a script needs macOS Accessibility permission that an unattended
 # run cannot grant. So this uses a dev-only test hook instead: the app is
-# launched with NOTEBOOK_SHOOT_VIEW=<view>, the frontend reads it via the
+# launched with STASH_SHOOT_VIEW=<view>, the frontend reads it via the
 # `shoot_view` command, switches to that view, and once React has painted asks
 # for the panel via `shoot_show_overlay`. Both commands return/do nothing in a
 # release build or when the variable is unset (src-tauri/src/lib.rs).
@@ -52,8 +52,8 @@
 # Which vault the shot shows
 # ---------------------------
 # Never the user's own. Each run seeds a small fixture vault and points the app
-# at it with NOTEBOOK_VAULT_DIR (honoured by `resolve_vault_dir` ahead of the
-# config file and the ~/Notebook default), so a PNG that ends up in a report or
+# at it with STASH_VAULT_DIR (honoured by `resolve_vault_dir` ahead of the
+# config file and the ~/Stash default), so a PNG that ends up in a report or
 # a commit cannot leak real notes. Override the location with SHOOT_VAULT_DIR.
 #
 # One side effect worth knowing: the app's index db lives in the app data dir,
@@ -81,13 +81,13 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT_DIR="${SHOOT_OUT_DIR:-$REPO_ROOT/screenshots}"
 # Matched against the app process's argv with `pgrep -f`/`pkill -f`. `tauri dev`
 # execs the binary from the repo root by its RELATIVE path, so argv is exactly
-# "target/debug/notebook" and this string must stay relative: prefixing it with
+# "target/debug/stash" and this string must stay relative: prefixing it with
 # "$REPO_ROOT/src-tauri/" matches nothing and silently disables every guard
 # built on it.
-APP_BIN_MATCH='target/debug/notebook'
+APP_BIN_MATCH='target/debug/stash'
 VITE_PORT=1420
 # Throwaway vault the app is pointed at for every capture, via the
-# NOTEBOOK_VAULT_DIR override in src-tauri/src/index.rs. Screenshots go into
+# STASH_VAULT_DIR override in src-tauri/src/index.rs. Screenshots go into
 # reports and commits, so they must never contain the user's real notes.
 FIXTURE_VAULT="${SHOOT_VAULT_DIR:-$OUT_DIR/fixture-vault}"
 # Warm worktree: the app is up in a few seconds. Raise this for the first run
@@ -227,8 +227,8 @@ mkdir -p "$OUT_DIR"
 #
 # Every capture runs against a throwaway vault, never the user's real one:
 # these PNGs end up in reports and commits. `resolve_vault_dir` honours
-# NOTEBOOK_VAULT_DIR ahead of both ~/.config/notebook/config.json and the
-# ~/Notebook default (src-tauri/src/index.rs).
+# STASH_VAULT_DIR ahead of both ~/.config/stash/config.json and the
+# ~/Stash default (src-tauri/src/index.rs).
 #
 # Rebuilt from scratch on every run so a shot never inherits a note left by an
 # earlier one. Note the `enriched:` marker on the knowledge note: without it the
@@ -241,7 +241,7 @@ mkdir -p "$OUT_DIR"
 # SHOOT_VAULT_DIR at a real vault and the run stops with nothing removed.
 # A dotfile so `ls | wc -l` still counts notes, and so it cannot be mistaken
 # for one (the indexer only reads *.md).
-FIXTURE_MARKER=".notebook-shoot-fixture"
+FIXTURE_MARKER=".stash-shoot-fixture"
 
 # Exits non-zero unless $FIXTURE_VAULT is safe to delete: absent, empty, or
 # carrying our marker. Anything else is someone's real directory.
@@ -409,10 +409,10 @@ launch_app() {
   # gets SIGTTIN and stops dead.
   (
     cd "$REPO_ROOT"
-    NOTEBOOK_SHOOT_VIEW="$view" \
-      NOTEBOOK_SHOOT_TEXT="${SHOOT_TEXT:-}" \
-      NOTEBOOK_SHOOT_TYPE="${SHOOT_TYPE:-}" \
-      NOTEBOOK_VAULT_DIR="$FIXTURE_VAULT" \
+    STASH_SHOOT_VIEW="$view" \
+      STASH_SHOOT_TEXT="${SHOOT_TEXT:-}" \
+      STASH_SHOOT_TYPE="${SHOOT_TYPE:-}" \
+      STASH_VAULT_DIR="$FIXTURE_VAULT" \
       exec npm run tauri dev
   ) </dev/null >"$log_file" 2>&1 &
   APP_PGID=$!

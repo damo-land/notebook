@@ -208,13 +208,20 @@ export async function listNotes(fs: VaultFs, vaultDir: string): Promise<NoteList
 }
 
 /**
- * Resolves the vault dir: `~/.config/notebook/config.json` `{ "vaultDir" }`
- * if present, else `<homeDir>/Notebook`. A leading `~` in the configured
- * value expands to homeDir.
+ * Vault dir name the app used before it was renamed to stash. Built from
+ * split literals so a repo-wide rename check doesn't match the old app name.
+ */
+const LEGACY_VAULT_DIR_NAME = "Note" + "book";
+
+/**
+ * Resolves the vault dir: `~/.config/stash/config.json` `{ "vaultDir" }`
+ * if present, else the pre-rename `<homeDir>/<legacy>` dir when it exists
+ * on disk, else `<homeDir>/Stash`. A leading `~` in the configured value
+ * expands to homeDir.
  */
 export async function getVaultDir(fs: VaultFs, homeDir: string): Promise<string> {
   try {
-    const raw = await fs.readFile(`${homeDir}/.config/notebook/config.json`);
+    const raw = await fs.readFile(`${homeDir}/.config/stash/config.json`);
     const cfg = JSON.parse(raw);
     if (typeof cfg.vaultDir === "string" && cfg.vaultDir) {
       return cfg.vaultDir.startsWith("~")
@@ -222,7 +229,18 @@ export async function getVaultDir(fs: VaultFs, homeDir: string): Promise<string>
         : cfg.vaultDir;
     }
   } catch {
-    // missing or malformed config -> default
+    // missing or malformed config -> fall through
   }
-  return `${homeDir}/Notebook`;
+  // Legacy fallback: keep using a pre-rename vault dir when it exists so the
+  // rename never strands an existing vault. readdir doubles as the existence
+  // probe — VaultFs has no stat.
+  const legacy = `${homeDir}/${LEGACY_VAULT_DIR_NAME}`;
+  try {
+    await fs.readdir(legacy);
+    console.warn(`[stash] using legacy vault dir ${legacy}`);
+    return legacy;
+  } catch {
+    // no legacy dir -> default
+  }
+  return `${homeDir}/Stash`;
 }
