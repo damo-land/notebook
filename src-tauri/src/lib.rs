@@ -1,6 +1,7 @@
 pub mod alerts;
 pub mod enrich;
 pub mod index;
+pub mod llm_config;
 pub mod placement;
 
 use std::collections::{HashMap, HashSet};
@@ -917,16 +918,14 @@ fn set_vault_dir(app: AppHandle, state: State<IndexState>, path: String) -> Resu
     }
     let vault_dir = PathBuf::from(&expanded);
 
-    let config_dir = home.join(".config/stash");
-    std::fs::create_dir_all(&config_dir)
-        .map_err(|e| format!("mkdir {}: {e}", config_dir.display()))?;
-    let config_path = config_dir.join("config.json");
-    let config = serde_json::json!({ "vaultDir": expanded });
-    // atomic_write, like every other durable write here: config.json is the
+    // Read-modify-write via llm_config::update_config_json (atomic_write
+    // underneath, like every other durable write here): config.json is the
     // one file that decides where ALL notes live, and a half-written one
-    // would strand the vault behind a parse error.
-    atomic_write(&config_path, config.to_string().as_bytes(), None)
-        .map_err(|e| format!("write {}: {e}", config_path.display()))?;
+    // would strand the vault behind a parse error. The merge is what keeps a
+    // vault change from dropping the `llm` key (and vice versa).
+    llm_config::update_config_json(&home, |root| {
+        root.insert("vaultDir".into(), serde_json::Value::String(expanded.clone()));
+    })?;
     std::fs::create_dir_all(&vault_dir)
         .map_err(|e| format!("mkdir {}: {e}", vault_dir.display()))?;
 
@@ -962,6 +961,46 @@ fn set_vault_dir(app: AppHandle, state: State<IndexState>, path: String) -> Resu
         }
     }
     Ok(())
+}
+
+// --- LLM provider config (T2) ------------------------------------------------
+//
+// `~/.config/stash/config.json` grows an `llm` object alongside `vaultDir`
+// (see llm_config.rs for shape and defaulting). There is no in-memory LLM
+// state to keep in sync: every chat/enrichment dispatch re-reads the file, so
+// a write here applies to the very next call without a restart.
+
+/// The current LLM config (defaults when unconfigured: claude /
+/// claude-haiku-4-5). What the settings UI renders.
+#[tauri::command]
+fn get_llm_config(app: AppHandle) -> Result<llm_config::LlmConfig, String> {
+    let home = app.path().home_dir().map_err(|e| e.to_string())?;
+    Ok(llm_config::read_llm_config(&home))
+}
+
+/// Persists `{"llm": {provider, model}}` into config.json — a merge, through
+/// the same atomic-write mechanism as [`set_vault_dir`], so the `vaultDir`
+/// key is preserved.
+#[tauri::command]
+fn set_llm_config(app: AppHandle, provider: String, model: String) -> Result<(), String> {
+    let provider = provider.trim().to_string();
+    let model = model.trim().to_string();
+    if !llm_config::LLM_PROVIDERS.contains(&provider.as_str()) {
+        return Err(format!(
+            "unknown LLM provider {provider:?} (expected one of {:?})",
+            llm_config::LLM_PROVIDERS
+        ));
+    }
+    if model.is_empty() {
+        return Err("LLM model is empty".into());
+    }
+    let home = app.path().home_dir().map_err(|e| e.to_string())?;
+    llm_config::update_config_json(&home, |root| {
+        root.insert(
+            "llm".into(),
+            serde_json::json!({ "provider": provider, "model": model }),
+        );
+    })
 }
 
 // --- Sidecar (Node agent process, see sidecar/README.md) ---------------------
@@ -1138,6 +1177,67 @@ fn sidecar_ping(state: tauri::State<SidecarState>) -> Result<String, String> {
         .map_err(|_| "sidecar ping timed out".to_string())
 }
 
+// --- Provider status probes (T2) ---------------------------------------------
+//
+// Both are settings-UI probes: they answer "is this provider usable right
+// now" without the caller having to interpret a failed chat. Each returns the
+// sidecar's `result` value as-is — the shapes are documented on the sidecar
+// methods (main.ts): claudeStatus -> {authenticated, detail}, ollamaStatus ->
+// {reachable, models}.
+
+/// The Claude probe makes one real (tiny) model call — that IS the existing
+/// auth detection (llm.ts classifyLlmError), and the OAuth chain lives in the
+/// CLI, so there is nothing cheaper to ask.
+const CLAUDE_STATUS_TIMEOUT: Duration = Duration::from_secs(60);
+/// The Ollama probe is a local HTTP GET with its own ~1.5s fetch timeout;
+/// this outer bound only covers a wedged sidecar.
+const OLLAMA_STATUS_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Waits for one sidecar response line and unwraps `{ok, result|error}` into
+/// the `result` value. Off the async runtime's threads, like chat_send.
+async fn await_sidecar_result(
+    rx: mpsc::Receiver<String>,
+    timeout: Duration,
+) -> Result<serde_json::Value, String> {
+    let line = tauri::async_runtime::spawn_blocking(move || {
+        rx.recv_timeout(timeout)
+            .map_err(|_| "no sidecar response within the timeout".to_string())
+    })
+    .await
+    .map_err(|e| format!("sidecar wait failed: {e}"))??;
+    let parsed = serde_json::from_str::<serde_json::Value>(&line)
+        .map_err(|e| format!("unparseable sidecar response: {e}"))?;
+    if parsed.get("ok").and_then(|b| b.as_bool()) != Some(true) {
+        return Err(parsed
+            .get("error")
+            .and_then(|e| e.as_str())
+            .unwrap_or("sidecar call failed")
+            .to_string());
+    }
+    Ok(parsed.get("result").cloned().unwrap_or(serde_json::Value::Null))
+}
+
+/// Claude auth status: `{authenticated: bool, detail: string|null}`.
+#[tauri::command]
+async fn claude_auth_status(
+    app: AppHandle,
+    sidecar: State<'_, SidecarState>,
+) -> Result<serde_json::Value, String> {
+    let llm = llm_config::read_llm_config(&app.path().home_dir().map_err(|e| e.to_string())?);
+    let rx = sidecar
+        .0
+        .call("claudeStatus", Some(serde_json::json!({ "llm": llm })))?;
+    await_sidecar_result(rx, CLAUDE_STATUS_TIMEOUT).await
+}
+
+/// Ollama reachability: `{reachable: bool, models: string[]}`. A daemon that
+/// is down is a normal `reachable: false` result, not an Err.
+#[tauri::command]
+async fn ollama_status(sidecar: State<'_, SidecarState>) -> Result<serde_json::Value, String> {
+    let rx = sidecar.0.call("ollamaStatus", None)?;
+    await_sidecar_result(rx, OLLAMA_STATUS_TIMEOUT).await
+}
+
 // --- Chat (T14) --------------------------------------------------------------
 //
 // One turn of the overlay's chat view. The answer streams back out of band as
@@ -1161,12 +1261,16 @@ struct ChatReply {
 
 #[tauri::command]
 async fn chat_send(
+    app: AppHandle,
     sidecar: State<'_, SidecarState>,
     index: State<'_, IndexState>,
     text: String,
     session: Option<String>,
     turn: String,
 ) -> Result<ChatReply, String> {
+    // LLM config is read fresh from disk PER TURN (never cached): a provider
+    // or model change in settings applies to the next message, no restart.
+    let llm = llm_config::read_llm_config(&app.path().home_dir().map_err(|e| e.to_string())?);
     let rx = sidecar.0.call(
         "chat",
         Some(serde_json::json!({
@@ -1174,6 +1278,7 @@ async fn chat_send(
             "text": text,
             "session": session,
             "turn": turn,
+            "llm": llm,
         })),
     )?;
     // Off the async runtime's threads: the wait is minutes long and blocking.
@@ -1245,10 +1350,15 @@ fn spawn_enrich_worker(
                 eprintln!("[enrich] {}: job not run, vault dir lock poisoned", job.id);
                 continue;
             };
+            // LLM config read fresh per job (this thread has no AppHandle,
+            // hence $HOME): a provider/model change applies to the next
+            // queued job without a restart, matching chat_send.
+            let llm = llm_config::read_llm_config_env_home();
             let params = serde_json::json!({
                 "vaultDir": vault_dir.to_string_lossy(),
                 "path": job.path,
                 "related": job.related,
+                "llm": llm,
             });
             let reply = sidecar.call("enrich", Some(params)).and_then(|rx| {
                 rx.recv_timeout(ENRICH_TIMEOUT)
@@ -1374,6 +1484,10 @@ pub fn run() {
             delete_note,
             needs_setup,
             set_vault_dir,
+            get_llm_config,
+            set_llm_config,
+            claude_auth_status,
+            ollama_status,
             vault_read_file,
             vault_write_file,
             vault_readdir,
