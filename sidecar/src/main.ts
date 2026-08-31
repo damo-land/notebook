@@ -2,7 +2,14 @@
 // stdio. Request: {id, method, params?} -> Response: {id, ok, result|error}.
 // v1 methods: ping (no LLM), prompt ({text} -> LLM response text),
 // enrich ({vaultDir, path, related?} -> append-only pass over a knowledge note),
-// chat ({vaultDir, text, session?, turn?} -> {text, session}).
+// chat ({vaultDir, text, session?, turn?} -> {text, session}),
+// claudeStatus ({} -> {authenticated, detail}),
+// ollamaStatus ({} -> {reachable, models}).
+//
+// prompt/enrich/chat additionally accept an optional `llm` param
+// ({provider, model}, sent by the Rust side from a fresh read of
+// ~/.config/stash/config.json) and resolve the call through the provider seam
+// (provider.ts) — absent, it defaults to claude/claude-haiku-4-5.
 //
 // `chat` also writes UNSOLICITED lines while it works:
 //   {type: "chunk", id, turn, text}
@@ -11,9 +18,15 @@
 // follows. A reader must therefore check `type` BEFORE looking `id` up in its
 // pending-request map, or the first chunk closes the request early.
 import { createInterface } from "node:readline";
-import { chatDeps, chatTurn } from "./chat.ts";
 import { enrichNote, type RelatedNote } from "./enrich.ts";
 import { runPrompt } from "./llm.ts";
+import { probeOllama } from "./ollama.ts";
+import {
+  coerceLlmConfig,
+  providerChatTurn,
+  providerRunPrompt,
+  resolveClaudeModel,
+} from "./provider.ts";
 
 /** Tolerant coercion of the `related` payload sent by the Rust dispatcher. */
 function toRelated(value: unknown): RelatedNote[] {
@@ -58,7 +71,8 @@ async function handle(req: Request): Promise<void> {
           respond(req.id, { ok: false, error: "prompt requires params.text (non-empty string)" });
           break;
         }
-        respond(req.id, { ok: true, result: await runPrompt(text) });
+        const llm = coerceLlmConfig(req.params?.["llm"]);
+        respond(req.id, { ok: true, result: await providerRunPrompt(llm)(text) });
         break;
       }
       case "enrich": {
@@ -75,7 +89,7 @@ async function handle(req: Request): Promise<void> {
         // the note file is left untouched and unmarked, so the app retries it.
         const result = await enrichNote(
           { vaultDir, path, related: toRelated(req.params?.["related"]) },
-          { runPrompt },
+          { runPrompt: providerRunPrompt(coerceLlmConfig(req.params?.["llm"])) },
         );
         respond(req.id, { ok: true, result });
         break;
@@ -93,16 +107,45 @@ async function handle(req: Request): Promise<void> {
         const session = req.params?.["session"];
         const turn = req.params?.["turn"];
         const turnId = typeof turn === "string" ? turn : null;
-        const result = await chatTurn(
+        const result = await providerChatTurn(
+          coerceLlmConfig(req.params?.["llm"]),
           {
             vaultDir,
             text,
             ...(typeof session === "string" && session !== "" ? { session } : {}),
           },
-          chatDeps,
           { onText: (delta) => emitChunk(req.id, turnId, delta) },
         );
         respond(req.id, { ok: true, result });
+        break;
+      }
+      case "claudeStatus": {
+        // Claude auth status, by reusing THE existing auth detection: a
+        // minimal runPrompt whose failures pass through classifyLlmError
+        // (llm.ts) — the same typed signal smoke.ts and the enrich worker
+        // rely on. There is no cheaper credential check: the OAuth chain
+        // lives in the CLI (keychain on macOS), so asking the SDK is the
+        // only honest probe. Typed result, never a throw.
+        const llm = coerceLlmConfig(req.params?.["llm"]);
+        try {
+          await runPrompt("Reply with exactly one word: ok", {
+            model: resolveClaudeModel(undefined, llm.model),
+          });
+          respond(req.id, { ok: true, result: { authenticated: true, detail: null } });
+        } catch (err) {
+          respond(req.id, {
+            ok: true,
+            result: {
+              authenticated: false,
+              detail: err instanceof Error ? err.message : String(err),
+            },
+          });
+        }
+        break;
+      }
+      case "ollamaStatus": {
+        // probeOllama never throws; a down daemon is {reachable: false}.
+        respond(req.id, { ok: true, result: await probeOllama() });
         break;
       }
       default:
