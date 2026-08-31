@@ -344,7 +344,7 @@ pub fn due_alerts(conn: &Connection, now: &str) -> Result<Vec<NoteRow>> {
 
 /// Vault dir name the app used before it was renamed to stash. Built from
 /// split literals so a repo-wide rename check doesn't match the old app name.
-const LEGACY_VAULT_DIR_NAME: &str = concat!("Note", "book");
+pub const LEGACY_VAULT_DIR_NAME: &str = concat!("Note", "book");
 
 /// `~/.config/stash/config.json` `{ "vaultDir" }` if present, else the
 /// pre-rename `~/<legacy>` dir when it exists on disk, else `<home>/Stash`;
@@ -396,15 +396,21 @@ pub fn resolve_vault_dir(home: &Path) -> PathBuf {
 // Watcher (vault dir -> debounced full reindex)
 // ---------------------------------------------------------------------------
 
-/// Watches `vault_dir` and triggers a full reindex ~500ms after the last file
-/// event. The returned watcher must be kept alive for the app's lifetime.
+/// Watches the vault dir and triggers a full reindex ~500ms after the last
+/// file event. The returned watcher must be kept alive for the app's lifetime.
+///
+/// `vault_dir` is the SHARED handle also swapped by `set_vault_dir` — the
+/// watch is registered on the dir it holds at spawn time, but every reindex
+/// re-reads it (see [`watcher_reindex`]), so a vault switch mid-session can
+/// never make an event from the old directory rebuild the index from the old
+/// directory's files. `set_vault_dir` re-points the watch itself.
 ///
 /// `on_reindex` runs after each successful reindex, **outside** the connection
 /// lock so it can query the index itself. T12 uses it to queue enrichment jobs
 /// for freshly saved knowledge notes: the watcher already sees every vault
 /// write, whatever wrote it, and it fires only after the file is on disk.
 pub fn spawn_watcher(
-    vault_dir: PathBuf,
+    vault_dir: Arc<Mutex<PathBuf>>,
     conn: Arc<Mutex<Connection>>,
     on_reindex: impl Fn() + Send + 'static,
 ) -> notify::Result<notify::RecommendedWatcher> {
@@ -415,27 +421,43 @@ pub fn spawn_watcher(
             let _ = tx.send(());
         }
     })?;
-    watcher.watch(&vault_dir, notify::RecursiveMode::NonRecursive)?;
+    let watch_dir = match vault_dir.lock() {
+        Ok(dir) => dir.clone(),
+        Err(e) => return Err(notify::Error::generic(&format!("vault dir lock poisoned: {e}"))),
+    };
+    watcher.watch(&watch_dir, notify::RecursiveMode::NonRecursive)?;
     std::thread::spawn(move || {
         while rx.recv().is_ok() {
             // Debounce: swallow further events until 500ms of quiet.
             while rx.recv_timeout(Duration::from_millis(500)).is_ok() {}
-            let reindexed = match conn.lock() {
-                Ok(conn) => match reindex(&conn, &vault_dir) {
-                    Ok(_) => true,
-                    Err(e) => {
-                        eprintln!("index: reindex after file change failed: {e}");
-                        false
-                    }
-                },
-                Err(_) => false,
-            };
-            if reindexed {
+            if watcher_reindex(&conn, &vault_dir) {
                 on_reindex();
             }
         }
     });
     Ok(watcher)
+}
+
+/// One watcher-triggered reindex. Reads the vault dir from the shared handle
+/// AT CALL TIME — never a copy captured when the watcher was spawned — so
+/// after `set_vault_dir` swaps the dir, a stray event from the previously
+/// watched directory rebuilds the index from the CURRENT vault, not the old
+/// one (a harmless refresh instead of a silent clobber).
+fn watcher_reindex(conn: &Arc<Mutex<Connection>>, vault_dir: &Arc<Mutex<PathBuf>>) -> bool {
+    let dir = match vault_dir.lock() {
+        Ok(dir) => dir.clone(),
+        Err(_) => return false,
+    };
+    match conn.lock() {
+        Ok(conn) => match reindex(&conn, &dir) {
+            Ok(_) => true,
+            Err(e) => {
+                eprintln!("index: reindex after file change failed: {e}");
+                false
+            }
+        },
+        Err(_) => false,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -445,9 +467,11 @@ pub fn spawn_watcher(
 #[cfg(test)]
 mod tests {
     use super::{
-        list_all_notes, open_db, reindex, remove_note, resolve_vault_dir, LEGACY_VAULT_DIR_NAME,
+        list_all_notes, open_db, reindex, remove_note, resolve_vault_dir, watcher_reindex,
+        LEGACY_VAULT_DIR_NAME,
     };
     use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
 
     const OVERRIDE: &str = "STASH_VAULT_DIR";
 
@@ -558,6 +582,53 @@ mod tests {
         let conn = open_db(&db_path).unwrap();
         // The column exists and the all-notes query runs.
         assert!(list_all_notes(&conn).unwrap().is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The watcher-clobber regression (T6 audit): `watcher_reindex` must read
+    /// the vault dir from the shared handle AT CALL TIME. After a vault
+    /// switch swaps that handle, a call — as a stray fs event from the old
+    /// directory would trigger — rebuilds the index from the NEW vault, so
+    /// the old directory can no longer overwrite it with its own contents.
+    #[test]
+    fn watcher_reindex_follows_the_current_shared_vault_dir() {
+        let dir = scratch_home("watcher-reindex");
+        let old_vault = dir.join("old");
+        let new_vault = dir.join("new");
+        std::fs::create_dir_all(&old_vault).unwrap();
+        std::fs::create_dir_all(&new_vault).unwrap();
+        std::fs::write(
+            old_vault.join("old.md"),
+            "---\nid: old\nkind: note\ncreated: 2026-08-30T10:00:00\n---\nold vault note\n",
+        )
+        .unwrap();
+        std::fs::write(
+            new_vault.join("new.md"),
+            "---\nid: new\nkind: note\ncreated: 2026-08-30T11:00:00\n---\nnew vault note\n",
+        )
+        .unwrap();
+
+        let conn = Arc::new(Mutex::new(open_db(&dir.join("index.db")).unwrap()));
+        let shared_dir = Arc::new(Mutex::new(old_vault.clone()));
+        let ids = |conn: &Arc<Mutex<rusqlite::Connection>>| -> Vec<String> {
+            list_all_notes(&conn.lock().unwrap())
+                .unwrap()
+                .into_iter()
+                .map(|n| n.id)
+                .collect()
+        };
+
+        // Before the switch: events index the old vault (it IS the vault).
+        assert!(watcher_reindex(&conn, &shared_dir));
+        assert_eq!(ids(&conn), vec!["old"]);
+
+        // The switch (what set_vault_dir does to the shared handle) …
+        *shared_dir.lock().unwrap() = new_vault.clone();
+        // … and a subsequent watcher-triggered reindex — even one caused by
+        // an event in the OLD directory — indexes the CURRENT vault only.
+        assert!(watcher_reindex(&conn, &shared_dir));
+        assert_eq!(ids(&conn), vec!["new"]);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
