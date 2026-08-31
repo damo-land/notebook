@@ -631,13 +631,19 @@ fn spawn_alert_scheduler(app: AppHandle, conn: Arc<Mutex<rusqlite::Connection>>)
 
 /// SQLite index state. The watcher handle is held here to keep it alive.
 ///
-/// `vault_dir` is behind a Mutex because the setup view (T6) can re-point it
-/// at runtime via [`set_vault_dir`]; every command that needs the dir takes a
-/// clone through [`IndexState::vault_dir`].
+/// `vault_dir` is behind an `Arc<Mutex<..>>` because the setup view (T6) can
+/// re-point it at runtime via [`set_vault_dir`], and the SAME handle is held
+/// by the watcher thread and the enrichment worker — both read the dir at use
+/// time, so a switch re-points them too instead of leaving them on a captured
+/// launch-time copy. Every command that needs the dir takes a clone through
+/// [`IndexState::vault_dir`].
+///
+/// `watcher` is behind a Mutex so [`set_vault_dir`] can re-register the watch
+/// on the newly chosen directory.
 struct IndexState {
     conn: Arc<Mutex<rusqlite::Connection>>,
-    vault_dir: Mutex<PathBuf>,
-    _watcher: Option<notify::RecommendedWatcher>,
+    vault_dir: Arc<Mutex<PathBuf>>,
+    watcher: Mutex<Option<notify::RecommendedWatcher>>,
 }
 
 impl IndexState {
@@ -882,15 +888,20 @@ fn needs_setup(app: AppHandle) -> Result<bool, String> {
 
 /// Confirms the setup view: persists `{"vaultDir": path}` to
 /// `~/.config/stash/config.json`, creates the directory, and re-points the
-/// RUNNING app at it — in-memory vault dir swapped, index rebuilt — so new
-/// captures, search and tasks hit the new vault without a restart.
+/// RUNNING app at it — in-memory vault dir swapped, index rebuilt, file
+/// watcher re-registered on the new directory — so new captures, search,
+/// tasks, watcher-driven reindexes and enrichment dispatch all hit the new
+/// vault without a restart. The watcher thread and the enrichment worker
+/// read the dir from the shared handle at use time (never a launch-time
+/// copy), so even a stray event from the old directory can only refresh the
+/// index from the CURRENT vault — the old vault can no longer clobber it.
 ///
-/// Known caveat, accepted for a rare settings change: the vault file watcher
-/// and the enrichment worker captured the launch-time vault dir and keep
-/// pointing at it until the next app start. Everything the app itself writes
-/// still lands and indexes correctly (the UI paths reindex explicitly);
-/// only EXTERNAL edits to the new vault wait for a restart (or a manual
-/// reindex) to be picked up.
+/// Known caveats, accepted for a rare settings change: if re-registering the
+/// watch on the new directory fails (logged below), EXTERNAL edits to the
+/// new vault go unseen until the next app start — the app's own writes still
+/// land and index correctly. And between the dir swap and the re-watch a
+/// last old-dir event may trigger one redundant reindex of the new vault —
+/// harmless.
 #[tauri::command]
 fn set_vault_dir(app: AppHandle, state: State<IndexState>, path: String) -> Result<(), String> {
     let home = app.path().home_dir().map_err(|e| e.to_string())?;
@@ -921,9 +932,35 @@ fn set_vault_dir(app: AppHandle, state: State<IndexState>, path: String) -> Resu
 
     // Re-point the running app: swap the in-memory dir first, then rebuild
     // the index so search/tasks show the new vault's notes immediately.
-    *state.vault_dir.lock().map_err(|e| e.to_string())? = vault_dir.clone();
-    let conn = state.conn.lock().map_err(|e| e.to_string())?;
-    index::reindex(&conn, &vault_dir).map_err(|e| e.to_string())?;
+    let old_dir = {
+        let mut dir = state.vault_dir.lock().map_err(|e| e.to_string())?;
+        std::mem::replace(&mut *dir, vault_dir.clone())
+    };
+    {
+        let conn = state.conn.lock().map_err(|e| e.to_string())?;
+        index::reindex(&conn, &vault_dir).map_err(|e| e.to_string())?;
+    }
+
+    // Re-register the file watch: stop watching the old directory (which may
+    // be gone — ignore that) and watch the new one, so external edits to the
+    // new vault keep triggering reindexes. The reindex path above already
+    // reads the CURRENT dir from the shared handle, so a failure here can
+    // never make the old vault overwrite the index — it only costs live
+    // pickup of external edits (see the doc comment's caveat).
+    if old_dir != vault_dir {
+        use notify::Watcher;
+        if let Ok(mut watcher) = state.watcher.lock() {
+            if let Some(watcher) = watcher.as_mut() {
+                let _ = watcher.unwatch(&old_dir);
+                if let Err(e) = watcher.watch(&vault_dir, notify::RecursiveMode::NonRecursive) {
+                    eprintln!(
+                        "index: watching new vault dir {} failed: {e}; external edits are picked up on next app start",
+                        vault_dir.display()
+                    );
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1193,13 +1230,21 @@ struct EnrichQueue {
 
 /// One job at a time: enrichment is background work and must never contend
 /// with the user's own foreground prompts.
+///
+/// `vault_dir` is the shared handle, read per job — after a vault switch
+/// (set_vault_dir), queued and future jobs are dispatched against the
+/// CURRENT vault, not the launch-time one.
 fn spawn_enrich_worker(
     sidecar: Arc<Sidecar>,
-    vault_dir: PathBuf,
+    vault_dir: Arc<Mutex<PathBuf>>,
 ) -> mpsc::Sender<enrich::EnrichJob> {
     let (tx, rx) = mpsc::channel::<enrich::EnrichJob>();
     std::thread::spawn(move || {
         for job in rx {
+            let Ok(vault_dir) = vault_dir.lock().map(|d| d.clone()) else {
+                eprintln!("[enrich] {}: job not run, vault dir lock poisoned", job.id);
+                continue;
+            };
             let params = serde_json::json!({
                 "vaultDir": vault_dir.to_string_lossy(),
                 "path": job.path,
@@ -1367,6 +1412,12 @@ pub fn run() {
                 eprintln!("index: initial reindex failed: {e}");
             }
             let conn = Arc::new(Mutex::new(conn));
+            // The ONE vault-dir handle: IndexState (commands, set_vault_dir),
+            // the watcher thread and the enrichment worker all share it, so a
+            // vault switch re-points every reader at once — none of them keep
+            // a launch-time copy.
+            let launch_dir = vault_dir.clone();
+            let vault_dir = Arc::new(Mutex::new(vault_dir));
 
             let queue = Arc::new(EnrichQueue {
                 tx: spawn_enrich_worker(sidecar, vault_dir.clone()),
@@ -1375,14 +1426,20 @@ pub fn run() {
             // Retry pass: any knowledge note still missing the `enriched`
             // marker — a job that failed in an earlier session, or a note
             // written while the app was closed.
-            dispatch_enrichment(&conn, &vault_dir, &queue);
+            dispatch_enrichment(&conn, &launch_dir, &queue);
 
             let watcher = {
                 let conn = conn.clone();
                 let vault_dir = vault_dir.clone();
                 let queue = queue.clone();
                 index::spawn_watcher(vault_dir.clone(), conn.clone(), move || {
-                    dispatch_enrichment(&conn, &vault_dir, &queue)
+                    // Read the CURRENT dir per dispatch: after a vault switch
+                    // this queues the new vault's pending notes, not the old
+                    // vault's.
+                    let Ok(dir) = vault_dir.lock().map(|d| d.clone()) else {
+                        return;
+                    };
+                    dispatch_enrichment(&conn, &dir, &queue)
                 })
             };
             let watcher = match watcher {
@@ -1398,8 +1455,8 @@ pub fn run() {
 
             app.manage(IndexState {
                 conn,
-                vault_dir: Mutex::new(vault_dir),
-                _watcher: watcher,
+                vault_dir,
+                watcher: Mutex::new(watcher),
             });
 
             // Resident tray app: no dock icon.
