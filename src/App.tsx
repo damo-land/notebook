@@ -27,6 +27,7 @@ import { ChatView, type ChatTurn } from "./components/chat-view";
 import { CommandPalette, type CommandItem } from "./components/command-palette";
 import { NoteEditor } from "./components/note-editor";
 import { SearchView } from "./components/search-view";
+import { SetupView } from "./components/setup-view";
 import { TasksView } from "./components/tasks-view";
 import "./App.css";
 
@@ -101,7 +102,10 @@ function App() {
   // box, or the T14 chat window. Orthogonal to `mode` (capture state persists
   // underneath) and below `editing` in render priority — Enter on a row opens
   // the editor over the view, and closing the editor drops back into it.
-  const [view, setView] = useState<"capture" | "tasks" | "search" | "chat">("capture");
+  const [view, setView] = useState<"capture" | "tasks" | "search" | "chat" | "setup">("capture");
+  // First run (T6): no vault configured anywhere. While true, the setup view
+  // cannot be cancelled or reset away — there is no vault to fall back to.
+  const [needsSetup, setNeedsSetup] = useState(false);
   // Chat transcript and SDK session id (T14). Held here rather than in
   // ChatView because leaving chat unmounts that component and the criterion
   // keeps the transcript for the session. In memory only — never written to
@@ -143,11 +147,30 @@ function App() {
     ? (inlineItems[Math.min(inlineIndex, inlineItems.length - 1)] ?? null)
     : null;
 
-  // Resolve the vault dir once at startup.
+  // Resolve the vault dir once at startup, and check for first run (T6):
+  // with no config and no legacy vault the app opens straight into the setup
+  // wizard instead of capturing into a default dir the user never chose.
   useEffect(() => {
     void (async () => {
       vaultDirRef.current = await getVaultDir(tauriVaultFs, await homeDir());
+      if (await invoke<boolean>("needs_setup")) {
+        setNeedsSetup(true);
+        setView("setup");
+      }
     })();
+  }, []);
+
+  // Tray "Settings…" (T6): Rust shows the panel and emits this event; reopen
+  // the same setup view, closing any open editor — same shape as the
+  // tasks-view path below.
+  useEffect(() => {
+    const unlisten = listen("open-settings-view", () => {
+      setEditing(null);
+      setView("setup");
+    });
+    return () => {
+      void unlisten.then((f) => f());
+    };
   }, []);
 
   // Tasks-view hotkey: the Rust handler (TASKS_VIEW_SHORTCUT) shows the
@@ -202,12 +225,14 @@ function App() {
       setPaletteIndex(0);
       resetToPlain(); // mode, field menu, in-progress field text, chips
       setEditing(null); // an open note editor: draft discarded
-      setView(restoreView({ transcriptEmpty }));
+      // First run keeps the wizard up (T6): with no vault configured there
+      // is no view to fall back to, so the next open resumes setup.
+      setView(needsSetup ? "setup" : restoreView({ transcriptEmpty }));
     });
     return () => {
       void unlisten.then((f) => f());
     };
-  }, [resetToPlain, transcriptEmpty]);
+  }, [resetToPlain, transcriptEmpty, needsSetup]);
 
   // Tell Rust when hiding on resign-key must be suppressed (T3): while the
   // chat view is up, or a chat turn is still streaming in — the moment an
@@ -591,6 +616,21 @@ function App() {
       onSave={(newBody) => void saveEdit(editing, newBody)}
       onClose={() => setEditing(null)} // Esc: discard draft, back to capture
       onDelete={() => void deleteEditing(editing)} // ⌘⌫: to the Trash, back
+    />
+  ) : view === "setup" ? (
+    <SetupView
+      firstRun={needsSetup}
+      onDone={async () => {
+        // The config file now exists; AWAIT the re-resolution before leaving
+        // the setup view, so a capture typed immediately after confirming
+        // lands in the vault just chosen — never the pre-switch dir a stale
+        // vaultDirRef would point at. SetupView awaits us and stays in its
+        // saving state (errors included) until this resolves.
+        vaultDirRef.current = await getVaultDir(tauriVaultFs, await homeDir());
+        setNeedsSetup(false);
+        setView("capture");
+      }}
+      onClose={() => setView("capture")} // Esc (never fires on first run)
     />
   ) : view === "tasks" ? (
     <TasksView onClose={() => setView("capture")} />
