@@ -45,6 +45,20 @@ const LLM_NOT_CONFIGURED =
   "The LLM is not configured — run `claude setup-token` in a terminal to " +
   "connect your Claude account, then try again.";
 
+/**
+ * Stable fragments of the sidecar's typed Ollama errors (sidecar/src/
+ * ollama.ts: OllamaNotReachableError, OllamaModelMissingError,
+ * OllamaNoModelError). These messages are already written for the user
+ * ("Ollama not reachable at localhost:11434", "model X not found — pull it or
+ * pick another in Settings"), so they go into the transcript verbatim rather
+ * than wrapped as a raw failure.
+ */
+const OLLAMA_GUIDANCE_FRAGMENTS = [
+  "Ollama not reachable",
+  "pull it or pick another in Settings",
+  "pick one in Settings",
+];
+
 /** `chat_send` return value (src-tauri/src/lib.rs ChatReply). */
 interface ChatReply {
   text: string;
@@ -115,13 +129,20 @@ export function ChatView({ turns, setTurns, session, setSession, onClose }: Chat
   const send = async (text: string) => {
     const turn = String((nextTurnId += 1));
     activeTurn = turn;
+    // The transcript so far, captured BEFORE this turn's rows are appended:
+    // the sidecar's ollama provider has no server-side session, so continuity
+    // is this replay of the full history each turn. The claude path keeps
+    // using `session` (SDK resume) and ignores it.
+    const history = turns
+      .filter((t) => t.streaming !== true && t.text !== "")
+      .map((t) => ({ role: t.role === "you" ? "user" : "assistant", content: t.text }));
     setTurns((prev) => [
       ...prev,
       { role: "you", text },
       { role: "stash", text: "", streaming: true },
     ]);
     try {
-      const reply = await invoke<ChatReply>("chat_send", { text, session, turn });
+      const reply = await invoke<ChatReply>("chat_send", { text, session, turn, history });
       setSession(reply.session);
       // Authoritative: also repairs a partial or over-long stream — deltas
       // missed while this view was unmounted, and anything the model said
@@ -133,7 +154,9 @@ export function ChatView({ turns, setTurns, session, setSession, onClose }: Chat
       finish(
         message.includes(NOT_AUTHENTICATED)
           ? LLM_NOT_CONFIGURED
-          : `(chat failed: ${message})`,
+          : OLLAMA_GUIDANCE_FRAGMENTS.some((f) => message.includes(f))
+            ? message
+            : `(chat failed: ${message})`,
       );
     } finally {
       if (activeTurn === turn) activeTurn = null;
