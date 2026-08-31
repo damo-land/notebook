@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { isDeleteChord } from "../lib/index-api";
 import type { Note } from "../lib/vault";
 import { useFocusOnOverlayShown } from "../lib/overlay";
 
@@ -8,6 +9,8 @@ interface NoteEditorProps {
   onSave: (newBody: string) => void;
   /** Close without saving. */
   onClose: () => void;
+  /** ⌘⌫: delete this note (to the Trash); the caller deletes and closes. */
+  onDelete: () => void;
 }
 
 /** ISO datetime -> short date for a chip ("2026-08-27"). */
@@ -18,12 +21,13 @@ function shortDate(iso: string): string {
 /**
  * Editor view for an existing note: read-only frontmatter chips (kind,
  * created, deadline, tags, done) above the same markdown textarea as
- * capture. Enter or Cmd+S saves, Shift+Enter inserts a newline, Esc closes
- * without saving. All three keys are consumed here (preventDefault +
+ * capture. Enter or Cmd+S saves, Shift+Enter inserts a newline, ⌘⌫ deletes
+ * the note (to the macOS Trash) and closes, Esc closes
+ * without saving. All these keys are consumed here (preventDefault +
  * stopPropagation for Esc) so neither the capture handlers nor the global
  * keymap (which hides the overlay) ever see them while the editor is open.
  */
-export function NoteEditor({ note, onSave, onClose }: NoteEditorProps) {
+export function NoteEditor({ note, onSave, onClose, onDelete }: NoteEditorProps) {
   const [draft, setDraft] = useState(note.body);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fm = note.frontmatter;
@@ -42,6 +46,14 @@ export function NoteEditor({ note, onSave, onClose }: NoteEditorProps) {
     if (cmdS || (event.key === "Enter" && !event.shiftKey)) {
       event.preventDefault();
       onSave(draft);
+      return;
+    }
+    // ⌘⌫ deletes this note — file to the macOS Trash — and drops back to the
+    // previous view (T4). metaKey-guarded via isDeleteChord, so bare
+    // Backspace keeps deleting characters in the draft as it always has.
+    if (isDeleteChord(event)) {
+      event.preventDefault();
+      onDelete();
     }
     // Shift+Enter falls through: newline, consistent with capture.
   };

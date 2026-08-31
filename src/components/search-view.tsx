@@ -5,8 +5,10 @@
 // newest mtime first) — see the effect below.
 //
 // Keys: Up/Down move selection; Enter opens the selected note in the T7
-// editor (which renders above this view — Esc there drops back here); Esc
-// goes back to the capture view (overlay stays up); Ctrl+W hides the overlay.
+// editor (which renders above this view — Esc there drops back here); ⌘⌫
+// deletes the selected note (to the macOS Trash — bare Backspace still edits
+// the query); Esc goes back to the capture view (overlay stays up); Ctrl+W
+// hides the overlay.
 //
 // Fetch model: one query per keystroke, no cache — the vault is
 // personal-scale. Out-of-order responses are dropped via the effect's
@@ -18,7 +20,7 @@
 // query would mean lifting state into App.
 
 import { useEffect, useRef, useState } from "react";
-import { listNotes, searchNotes, type IndexedNote } from "../lib/index-api";
+import { deleteNote, isDeleteChord, listNotes, searchNotes, type IndexedNote } from "../lib/index-api";
 import { openNote } from "../lib/note-editor-bus";
 import { dismissOverlay, useFocusOnOverlayShown } from "../lib/overlay";
 
@@ -93,6 +95,19 @@ export function SearchView({ onClose }: SearchViewProps) {
     if (event.key === "Enter") {
       event.preventDefault();
       if (selectedNote) openNote(selectedNote.id); // T7 editor overlays; Esc returns here
+      return;
+    }
+    // ⌘⌫ deletes the selected hit — file to the macOS Trash, row out of the
+    // index (T4). metaKey-guarded, so bare Backspace still edits the query.
+    // Optimistic removal, like the tasks view's markDone: the command already
+    // dropped the index row, so the list and the index agree.
+    if (isDeleteChord(event)) {
+      event.preventDefault();
+      if (selectedNote) {
+        void deleteNote(selectedNote.id)
+          .then(() => setResults((prev) => prev.filter((n) => n.id !== selectedNote.id)))
+          .catch((err) => console.error("delete note failed:", err));
+      }
       return;
     }
     if (event.key === "Escape") {

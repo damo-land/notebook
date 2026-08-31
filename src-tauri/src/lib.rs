@@ -661,6 +661,28 @@ fn reindex(state: State<IndexState>) -> Result<usize, String> {
     index::reindex(&conn, &state.vault_dir).map_err(|e| e.to_string())
 }
 
+/// Deletes a note (T4): moves its `.md` file to the macOS Trash — recoverable
+/// in Finder, never `fs::remove_file` — then drops its rows from the SQLite
+/// index so lists refresh immediately, without waiting for the watcher's
+/// debounced rescan (which will fire on the file event anyway and agree).
+///
+/// The path comes from the index; a stale index falls back to the canonical
+/// `<vault>/<id>.md` location (createNote's naming). If the file is already
+/// gone the index rows are still dropped, so a delete never wedges on a
+/// half-done earlier attempt.
+#[tauri::command]
+fn delete_note(state: State<IndexState>, id: String) -> Result<(), String> {
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    let path = index::note_path(&conn, &id)
+        .map_err(|e| e.to_string())?
+        .map(PathBuf::from)
+        .unwrap_or_else(|| state.vault_dir.join(format!("{id}.md")));
+    if path.exists() {
+        trash::delete(&path).map_err(|e| format!("trash {}: {e}", path.display()))?;
+    }
+    index::remove_note(&conn, &id).map_err(|e| e.to_string())
+}
+
 // --- Durable note writes -----------------------------------------------------
 //
 // Every write to a note in the user's vault goes through `atomic_write`. A
@@ -1208,6 +1230,7 @@ pub fn run() {
             list_tasks,
             due_alerts,
             reindex,
+            delete_note,
             vault_read_file,
             vault_write_file,
             vault_readdir,
