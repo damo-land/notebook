@@ -620,13 +620,18 @@ function App() {
   ) : view === "setup" ? (
     <SetupView
       firstRun={needsSetup}
-      onDone={async () => {
-        // The config file now exists; AWAIT the re-resolution before leaving
-        // the setup view, so a capture typed immediately after confirming
-        // lands in the vault just chosen — never the pre-switch dir a stale
-        // vaultDirRef would point at. SetupView awaits us and stays in its
-        // saving state (errors included) until this resolves.
+      onVaultApplied={async () => {
+        // The config file now holds the new path; AWAIT the re-resolution
+        // before the view continues, so a capture typed immediately after
+        // confirming lands in the vault just chosen — never the pre-switch
+        // dir a stale vaultDirRef would point at. SetupView awaits us and
+        // stays in its saving state (errors included) until this resolves.
         vaultDirRef.current = await getVaultDir(tauriVaultFs, await homeDir());
+      }}
+      onDone={() => {
+        // Wizard finished (both steps saved) or settings saved: back to
+        // capture. Only now does first-run end — Esc stays swallowed through
+        // the wizard's AI step.
         setNeedsSetup(false);
         setView("capture");
       }}

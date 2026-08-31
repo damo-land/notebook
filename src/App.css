@@ -294,6 +294,64 @@ body {
   color: var(--accent-bad);
 }
 
+/* settings / setup view (T5): header + AI section. Fields reuse the
+   field-editor row; the selects are native (keyboard support for free),
+   styled down to the overlay's tokens. */
+.settings-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px 4px;
+}
+
+.settings-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+}
+
+.settings-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.settings-version {
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.settings-select {
+  font-family: var(--font-system);
+  font-size: 14px;
+  color: var(--text-primary);
+  background: transparent;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  padding: 3px 6px;
+  outline: none;
+}
+
+/* Keyboard-first: the focused field must be visible while Tab cycles. */
+.settings-select:focus {
+  border-color: var(--text-tertiary);
+}
+
+.settings-note {
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+/* provider status lines (claude auth / ollama reachability) */
+.settings-status {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px 12px 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
 /* tasks view (T8) */
 .tasks-view {
   display: flex;
