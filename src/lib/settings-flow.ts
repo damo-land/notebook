@@ -12,16 +12,21 @@
 //
 // Save sequencing is encoded here, not left to the component: set_vault_dir
 // and set_llm_config both read-modify-write the same config.json and must
-// NEVER run concurrently, so savePlan returns an ORDERED list (vault first)
-// the caller awaits one action at a time, and the wizard yields exactly one
-// action per step. Verified by scripts/settings-flow-demo.ts.
+// NEVER run concurrently (set_autostart also merges into config.json), so
+// savePlan returns an ORDERED list (vault first, autostart last) the caller
+// awaits one action at a time, and the wizard yields an ordered list per
+// step, run the same way. Verified by scripts/settings-flow-demo.ts.
 
 import { CLAUDE_MODELS, DEFAULT_CLAUDE_MODEL } from "./llm-models";
 
 export type SettingsMode = "wizard" | "settings";
 export type WizardStep = "vault" | "ai";
 export type ProviderId = "claude" | "ollama";
-export type SettingsField = "vault" | "provider" | "model";
+export type SettingsField = "vault" | "provider" | "model" | "autostart";
+
+/** The wizard's "Launch at login" checkbox starts CHECKED: the pure
+ *  Enter-Enter path on a fresh machine enables autostart. */
+export const WIZARD_AUTOSTART_DEFAULT = true;
 
 /** `ollama_status` command result; null while the probe is still in flight. */
 export interface OllamaProbe {
@@ -113,8 +118,8 @@ export function providerSelectable(provider: ProviderId, probe: OllamaProbe | nu
 /** Focusable fields, in visual order. The wizard shows one step at a time;
  *  settings shows every section at once. */
 export function fieldOrder(mode: SettingsMode, step: WizardStep): SettingsField[] {
-  if (mode === "wizard") return step === "vault" ? ["vault"] : ["provider", "model"];
-  return ["vault", "provider", "model"];
+  if (mode === "wizard") return step === "vault" ? ["vault"] : ["provider", "model", "autostart"];
+  return ["vault", "provider", "model", "autostart"];
 }
 
 /** Next field in `order` from `current`, wrapping; unknown current → first. */
@@ -136,15 +141,17 @@ export function escCloses(mode: SettingsMode): boolean {
 
 export type SaveAction =
   | { cmd: "set_vault_dir"; path: string }
-  | { cmd: "set_llm_config"; provider: ProviderId; model: string };
+  | { cmd: "set_llm_config"; provider: ProviderId; model: string }
+  | { cmd: "set_autostart"; enabled: boolean };
 
 function llmSaveAction(choice: LlmChoice): SaveAction {
   return { cmd: "set_llm_config", provider: choice.provider, model: selectedModel(choice) };
 }
 
-// Wizard: one action per Enter — the vault write completes (and the caller's
-// vault re-resolution runs) before the AI step even renders, so the two
-// config writes cannot interleave.
+// Wizard: an ORDERED action list per Enter, run one at a time — the vault
+// write completes (and the caller's vault re-resolution runs) before the AI
+// step even renders, and the AI step's llm write completes before the
+// autostart write starts, so no two config writers ever interleave.
 
 export interface WizardState {
   step: WizardStep;
@@ -155,30 +162,46 @@ export function initialWizard(): WizardState {
   return { step: "vault", done: false };
 }
 
-/** Enter on the current wizard step: the action to run, and the next state.
- *  vault → save the path, advance; ai → save the (pre)selected llm, done. */
+/** Enter on the current wizard step: the ORDERED actions to run (the caller
+ *  awaits each before the next), and the next state. vault → save the path,
+ *  advance; ai → save the (pre)selected llm, then ALWAYS set_autostart with
+ *  the checkbox state (checked default → true; unchecked → false — an
+ *  explicit disable, idempotent on a fresh machine), done. Pure: a failed
+ *  action leaves the caller on the same state, and re-confirming it yields
+ *  the IDENTICAL plan — the retry after a set_autostart refusal re-runs the
+ *  idempotent llm write, then set_autostart again, with nothing duplicated
+ *  beyond that. */
 export function wizardConfirm(
   state: WizardState,
-  args: { vaultPath: string; llm: LlmChoice }
-): { state: WizardState; action: SaveAction } {
+  args: { vaultPath: string; llm: LlmChoice; autostart: boolean }
+): { state: WizardState; actions: SaveAction[] } {
   if (state.step === "vault") {
     return {
       state: { step: "ai", done: false },
-      action: { cmd: "set_vault_dir", path: args.vaultPath },
+      actions: [{ cmd: "set_vault_dir", path: args.vaultPath }],
     };
   }
-  return { state: { step: "ai", done: true }, action: llmSaveAction(args.llm) };
+  return {
+    state: { step: "ai", done: true },
+    actions: [llmSaveAction(args.llm), { cmd: "set_autostart", enabled: args.autostart }],
+  };
 }
 
-/** Settings-mode Enter: only what changed, vault strictly first. The caller
- *  awaits each action before dispatching the next (the two commands must
- *  never run concurrently). `initialLlm` null (no saved llm yet) counts as
- *  changed, so the first save writes the defaults out. */
+/** Settings-mode Enter: only what changed, vault strictly first, autostart
+ *  strictly last. The caller awaits each action before dispatching the next
+ *  (the config-writing commands must never run concurrently). `initialLlm`
+ *  null (no saved llm yet) counts as changed, so the first save writes the
+ *  defaults out; `initialAutostart` null (get_autostart probe unresolved or
+ *  FAILED) is the opposite — NO change, never a set_autostart: the view
+ *  disables the checkbox until the probe seeds it, so an untouched box (or a
+ *  fast Enter, or a failed probe) can never silently flip autostart. */
 export function savePlan(args: {
   initialVaultPath: string;
   vaultPath: string;
   initialLlm: { provider: string; model: string } | null;
   llm: LlmChoice;
+  initialAutostart: boolean | null;
+  autostart: boolean;
 }): SaveAction[] {
   const plan: SaveAction[] = [];
   if (args.vaultPath.trim() !== args.initialVaultPath.trim()) {
@@ -189,5 +212,8 @@ export function savePlan(args: {
     args.initialLlm.provider !== args.llm.provider ||
     args.initialLlm.model !== selectedModel(args.llm);
   if (llmChanged) plan.push(llmSaveAction(args.llm));
+  if (args.initialAutostart !== null && args.initialAutostart !== args.autostart) {
+    plan.push({ cmd: "set_autostart", enabled: args.autostart });
+  }
   return plan;
 }

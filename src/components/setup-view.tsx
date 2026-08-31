@@ -17,10 +17,12 @@
 // StrictMode's double effect; ollama_status rides the same guard. Both render
 // as "checking…" until they land.
 //
-// Save sequencing (T2 audit): set_vault_dir and set_llm_config both
-// read-modify-write config.json and must never run concurrently. The wizard
-// saves one thing per step; the settings save awaits the savePlan actions one
-// at a time, vault strictly first.
+// Save sequencing (T2 audit): set_vault_dir, set_llm_config and
+// set_autostart all read-modify-write config.json and must never run
+// concurrently. Both modes await their ordered action lists one at a time —
+// vault strictly first, autostart last ("Launch at login": wizard default
+// CHECKED and always saved on completion; settings seeded from the live
+// get_autostart and saved only when toggled).
 
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -30,6 +32,7 @@ import { getVaultDir } from "../lib/vault";
 import { homeDir, tauriVaultFs } from "../lib/vault-fs";
 import { useFocusOnOverlayShown } from "../lib/overlay";
 import {
+  WIZARD_AUTOSTART_DEFAULT,
   escCloses,
   fieldOrder,
   initialLlmChoice,
@@ -86,6 +89,17 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
   const [llm, setLlm] = useState<LlmChoice>(() => initialLlmChoice(null));
   const [initialLlm, setInitialLlm] = useState<{ provider: string; model: string } | null>(null);
 
+  // "Launch at login". Wizard: default CHECKED, so Enter-Enter enables it.
+  // Settings: the box must never show a value that didn't come from the
+  // get_autostart probe (live plugin state) — it starts UNCHECKED and
+  // DISABLED, the probe seeds both states, a failed probe leaves it disabled
+  // and puts the failure on the error line, and savePlan treats a null
+  // initial as "no change", so an untouched box (or a fast Enter before the
+  // probe lands) can never emit a set_autostart.
+  const [autostart, setAutostart] = useState(firstRun ? WIZARD_AUTOSTART_DEFAULT : false);
+  const [initialAutostart, setInitialAutostart] = useState<boolean | null>(null);
+  const autostartDisabled = mode === "settings" && initialAutostart === null;
+
   const [claudeStatus, setClaudeStatus] = useState<ClaudeStatus | null>(null);
   const [ollamaProbe, setOllamaProbe] = useState<OllamaProbe | null>(null);
   const [version, setVersion] = useState("");
@@ -96,6 +110,7 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
   const vaultRef = useRef<HTMLInputElement>(null);
   const providerRef = useRef<HTMLSelectElement>(null);
   const modelRef = useRef<HTMLSelectElement>(null);
+  const autostartRef = useRef<HTMLInputElement>(null);
 
   // Reopen focus goes to the first rendered field: the vault input, or — on
   // the wizard's AI step, where no vault input exists — the provider select.
@@ -162,7 +177,23 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
     void invoke<OllamaProbe>("ollama_status")
       .then(setOllamaProbe)
       .catch(() => setOllamaProbe({ reachable: false, models: [] }));
-  }, [aiVisible]);
+    // Settings only: seed the checkbox from the LIVE plugin state, not the
+    // stored config; until then it stays unchecked and disabled. A failed
+    // probe leaves initialAutostart null (box disabled, savePlan skips it)
+    // and surfaces on the error line. The wizard keeps its default-checked
+    // box instead — nothing is registered yet on first run.
+    if (!firstRun) {
+      void invoke<boolean>("get_autostart")
+        .then((enabled) => {
+          setAutostart(enabled);
+          setInitialAutostart(enabled);
+        })
+        .catch((err) => {
+          console.error("get_autostart failed:", err);
+          setError(`get_autostart failed: ${String(err)}`);
+        });
+    }
+  }, [aiVisible, firstRun]);
 
   // Advancing to the wizard's AI step swaps the field set; focus follows.
   useEffect(() => {
@@ -175,6 +206,7 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
     vault: vaultRef,
     provider: providerRef,
     model: modelRef,
+    autostart: autostartRef,
   };
 
   const fieldOf = (target: EventTarget | null): SettingsField | null =>
@@ -184,13 +216,21 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
         ? "provider"
         : target === modelRef.current
           ? "model"
-          : null;
+          : target === autostartRef.current
+            ? "autostart"
+            : null;
 
   /** Focus the next field in order, skipping any not currently rendered
-   *  (the model select is a note line when there is nothing to pick). */
+   *  (the model select is a note line when there is nothing to pick) or
+   *  disabled (the settings checkbox before the get_autostart probe lands —
+   *  a disabled input can't take focus, so Tab must not dead-end on it). */
   const focusNext = (from: SettingsField, delta: 1 | -1) => {
+    const focusable = (f: SettingsField) => {
+      const el = refs[f].current;
+      return el !== null && !(el as HTMLInputElement | HTMLSelectElement).disabled;
+    };
     let f = nextField(order, from, delta);
-    for (let i = 0; i < order.length && !refs[f].current; i++) f = nextField(order, f, delta);
+    for (let i = 0; i < order.length && !focusable(f); i++) f = nextField(order, f, delta);
     refs[f].current?.focus();
   };
 
@@ -208,10 +248,12 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
    *  set_vault_dir and set_llm_config must never run concurrently. */
   /** One save action, awaited to completion before the caller dispatches the
    *  next — this sequencing is what keeps the two config.json writers apart. */
-  const runAction = async (action: ReturnType<typeof wizardConfirm>["action"]) => {
+  const runAction = async (action: ReturnType<typeof wizardConfirm>["actions"][number]) => {
     if (action.cmd === "set_vault_dir") {
       await invoke("set_vault_dir", { path: action.path });
       await onVaultApplied();
+    } else if (action.cmd === "set_autostart") {
+      await invoke("set_autostart", { enabled: action.enabled });
     } else {
       await invoke("set_llm_config", { provider: action.provider, model: action.model });
     }
@@ -224,17 +266,28 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
     setError(null);
     try {
       if (firstRun) {
-        const { state: next, action } = wizardConfirm(wizard, { vaultPath: path, llm });
-        if (action.cmd === "set_llm_config" && !canSaveLlm(llm)) {
+        const { state: next, actions } = wizardConfirm(wizard, {
+          vaultPath: path,
+          llm,
+          autostart,
+        });
+        if (actions.some((a) => a.cmd === "set_llm_config") && !canSaveLlm(llm)) {
           setError("pick a model first");
           return;
         }
-        await runAction(action);
+        for (const action of actions) await runAction(action);
         setWizard(next);
         if (next.done) onDone();
         return;
       }
-      const plan = savePlan({ initialVaultPath: initialPath, vaultPath: path, initialLlm, llm });
+      const plan = savePlan({
+        initialVaultPath: initialPath,
+        vaultPath: path,
+        initialLlm,
+        llm,
+        initialAutostart,
+        autostart,
+      });
       // Guard only a save that would actually write the llm config: a
       // vault-only change must not be held hostage by an unpicked model.
       if (plan.some((a) => a.cmd === "set_llm_config" && a.model === "")) {
@@ -370,6 +423,20 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
           <div className="settings-status">
             <div>claude — {claudeLine}</div>
             <div>ollama — {ollamaLine}</div>
+          </div>
+          <div className="field-editor">
+            <span className="field-label">startup</span>
+            <label className="settings-check">
+              <input
+                ref={autostartRef}
+                type="checkbox"
+                checked={autostart}
+                disabled={autostartDisabled}
+                onChange={(e) => setAutostart(e.target.checked)}
+                aria-label="launch at login"
+              />
+              Launch at login
+            </label>
           </div>
         </>
       )}
