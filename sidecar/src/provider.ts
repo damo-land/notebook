@@ -6,7 +6,8 @@
 //   provider "claude" -> llm.ts runPrompt (the Agent SDK), with the model
 //                        resolved by the precedence documented on
 //                        resolveClaudeModel below;
-//   provider "ollama" -> ollama.ts (a typed not-implemented stub until T3/T4).
+//   provider "ollama" -> ollama.ts (prompt path real since T4; chat is a
+//                        typed not-implemented stub until T3).
 //
 // Deliberately not a plugin architecture: two providers, one if/else.
 import { chatTurn, type ChatTurnParams, type ChatTurnResult } from "./chat.ts";
@@ -83,7 +84,16 @@ export function providerRunPrompt(
   config: LlmConfig,
 ): (text: string, opts?: RunPromptOptions) => Promise<string> {
   if (config.provider === "ollama") {
-    return (text, opts = {}) => ollamaPrompt(text, opts);
+    // Same shape as the claude arm: an explicit per-call model wins, else the
+    // configured one. (No STASH_MODEL here — that env var names Claude models.)
+    return (text, opts = {}) =>
+      ollamaPrompt(text, {
+        ...opts,
+        model:
+          opts.model !== undefined && opts.model.trim() !== ""
+            ? opts.model
+            : config.model,
+      });
   }
   return (text, opts = {}) =>
     runPrompt(text, { ...opts, model: resolveClaudeModel(opts.model, config.model) });
