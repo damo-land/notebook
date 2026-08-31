@@ -105,9 +105,15 @@ async function handle(req: Request): Promise<void> {
         }
         // Throws on any failure, which the catch below turns into ok:false —
         // the note file is left untouched and unmarked, so the app retries it.
+        const llm = coerceLlmConfig(req.params?.["llm"]);
         const result = await enrichNote(
           { vaultDir, path, related: toRelated(req.params?.["related"]) },
-          { runPrompt: providerRunPrompt(coerceLlmConfig(req.params?.["llm"])) },
+          {
+            runPrompt: providerRunPrompt(llm),
+            // Local models flub the JSON-only instruction more often; give
+            // them one more attempt. Claude keeps its single shot.
+            retryMalformedReplyOnce: llm.provider === "ollama",
+          },
         );
         respond(req.id, { ok: true, result });
         break;

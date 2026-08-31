@@ -49,12 +49,14 @@ const LLM_NOT_CONFIGURED =
  * Stable fragments of the sidecar's typed Ollama errors (sidecar/src/
  * ollama.ts: OllamaNotReachableError, OllamaModelMissingError,
  * OllamaNoModelError). These messages are already written for the user
- * ("Ollama not reachable at localhost:11434", "model X not found — pull it or
- * pick another in Settings"), so they go into the transcript verbatim rather
- * than wrapped as a raw failure.
+ * ("Ollama is not reachable. Is the Ollama app running at localhost:11434?",
+ * "Ollama model missing: X — pull it or pick another in Settings"), so they
+ * go into the transcript verbatim rather than wrapped as a raw failure. Keep
+ * in sync with OLLAMA_NOT_REACHABLE_PREFIX / OLLAMA_MODEL_MISSING_SUFFIX /
+ * OLLAMA_NO_MODEL_MESSAGE.
  */
 const OLLAMA_GUIDANCE_FRAGMENTS = [
-  "Ollama not reachable",
+  "Ollama is not reachable",
   "pull it or pick another in Settings",
   "pick one in Settings",
 ];

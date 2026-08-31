@@ -1,32 +1,45 @@
-// Ollama provider. T3 lands the chat path for real: a DIY bounded tool loop
-// against POST /api/chat (native fetch, NDJSON streaming, no dependencies)
-// with a RAG-lite single-shot fallback, per the T1 scout verdict:
+// Ollama provider. Both entry shapes are real:
 //
-//   * tool loop first — the model is offered search_notes/read_note, its tool
-//     calls execute against the vault (vault.ts) and results feed back until
-//     a final answer, capped at OLLAMA_MAX_TURNS model calls;
-//   * a model that rejects tools (HTTP 400 "does not support tools") falls
-//     back to RAG-lite — top vault search hits injected into a single
-//     streamed prompt — and is remembered as rag-only for the session.
+//   * ollamaChat (T3): a DIY bounded tool loop against POST /api/chat (native
+//     fetch, NDJSON streaming, no dependencies) with a RAG-lite single-shot
+//     fallback, per the T1 scout verdict — the model is offered
+//     search_notes/read_note, its tool calls execute against the vault
+//     (vault.ts) and results feed back until a final answer, capped at
+//     OLLAMA_MAX_TURNS model calls; a model that rejects tools (HTTP 400
+//     "does not support tools") falls back to RAG-lite — top vault search
+//     hits injected into a single streamed prompt — and is remembered as
+//     rag-only for the session. Conversation continuity is transcript replay:
+//     the frontend resends its full transcript as `history` each turn (there
+//     is no session to resume, so ChatTurnResult.session is always null).
+//     The loop core (ollamaChatCore + runToolLoop/runRagLite) is pure over
+//     injected deps — stream, searchNotes, readNote — and unit-tested with a
+//     stubbed stream in ollama.test.ts; ollamaHttpStream is the one real-HTTP
+//     piece.
 //
-// Conversation continuity is transcript replay: the frontend resends its full
-// transcript as `history` each turn (there is no session to resume, so
-// ChatTurnResult.session is always null here).
+//   * ollamaPrompt (T4): the prompt/enrich shape — one single-shot,
+//     non-streaming POST /api/chat, no tools.
 //
-// The loop core (ollamaChatCore + runToolLoop/runRagLite) is pure over
-// injected deps — stream, searchNotes, readNote — and unit-tested with a
-// stubbed stream in ollama.test.ts; ollamaHttpStream is the one real-HTTP
-// piece.
+// Failures are typed the way llm.ts types auth failures: a stable message
+// prefix is the discriminator once main.ts flattens errors to their message.
+// Two states get their own type, shared by both entries — daemon down
+// (OllamaNotReachableError) and model not installed (OllamaModelMissingError)
+// — because the Rust enrich worker and the chat transcript say different
+// things for each.
 //
-// ollamaPrompt (the prompt/enrich shape) is still a typed stub for a later
-// task. probeOllama is real since T2: the settings UI needs "is the daemon
-// up, and which models does it hold".
+// probeOllama serves the settings UI: "is the daemon up, and which models does
+// it hold". Node 22's native fetch throughout — no HTTP dependency.
 import type { ChatHistoryTurn, ChatTurnParams, ChatTurnResult } from "./chat.ts";
 import type { RunPromptOptions } from "./llm.ts";
 import { readVaultNote, searchVault } from "./vault.ts";
 
 /** Ollama's default local endpoint. */
 export const OLLAMA_BASE_URL = "http://localhost:11434";
+
+/** The daemon endpoint: STASH_OLLAMA_URL env override, else the default. */
+export function ollamaBaseUrl(): string {
+  const env = process.env["STASH_OLLAMA_URL"];
+  return env !== undefined && env.trim() !== "" ? env.trim() : OLLAMA_BASE_URL;
+}
 
 /** `localhost:11434` — how error messages name the endpoint. */
 function hostLabel(baseUrl: string): string {
@@ -35,34 +48,41 @@ function hostLabel(baseUrl: string): string {
 
 // --- typed errors ------------------------------------------------------------
 // Same pattern as NotAuthenticatedError (llm.ts): stable message prefixes the
-// frontend can match on, because main.ts flattens errors to their message.
+// consumers can match on, because main.ts flattens errors to their message.
+// One error pair serves BOTH entries: the Rust enrich worker matches the
+// prefixes to log a typed skip, and chat-view.tsx matches fragments of the
+// same messages to render them as in-transcript guidance.
 
-/** Stable prefix of the still-stubbed prompt entry's error. */
-export const OLLAMA_NOT_IMPLEMENTED_PREFIX = "Ollama provider not implemented";
-
-export class OllamaNotImplementedError extends Error {
-  constructor(what: string) {
-    super(`${OLLAMA_NOT_IMPLEMENTED_PREFIX}: ${what}`);
-    this.name = "OllamaNotImplementedError";
-  }
-}
-
-/** Stable prefix: the daemon did not answer at all. */
-export const OLLAMA_UNREACHABLE_PREFIX = "Ollama not reachable";
+/**
+ * Stable prefix: the daemon did not answer at all (refused connection, DNS,
+ * timeout). The Rust enrich worker matches on this exact string.
+ */
+export const OLLAMA_NOT_REACHABLE_PREFIX = "Ollama is not reachable";
 
 export class OllamaNotReachableError extends Error {
-  constructor(host: string = hostLabel(OLLAMA_BASE_URL)) {
-    super(`${OLLAMA_UNREACHABLE_PREFIX} at ${host} — is the Ollama app running?`);
+  constructor(detail: string) {
+    super(`${OLLAMA_NOT_REACHABLE_PREFIX}. ${detail}`);
     this.name = "OllamaNotReachableError";
   }
 }
 
-/** Stable suffix: the configured model is not pulled on this machine. */
+/**
+ * Stable prefix: the daemon is up but does not hold the configured model
+ * (HTTP 404 from /api/chat, or an equivalent streamed error chunk). The Rust
+ * enrich worker matches on this exact string.
+ */
+export const OLLAMA_MODEL_MISSING_PREFIX = "Ollama model missing";
+
+/**
+ * Stable suffix of the chat path's model-missing detail; chat-view.tsx
+ * matches it to keep the message in-transcript guidance rather than a raw
+ * error dump.
+ */
 export const OLLAMA_MODEL_MISSING_SUFFIX = "pull it or pick another in Settings";
 
 export class OllamaModelMissingError extends Error {
-  constructor(model: string) {
-    super(`model ${model} not found — ${OLLAMA_MODEL_MISSING_SUFFIX}`);
+  constructor(detail: string) {
+    super(`${OLLAMA_MODEL_MISSING_PREFIX}: ${detail}`);
     this.name = "OllamaModelMissingError";
   }
 }
@@ -101,7 +121,9 @@ export function classifyOllamaError(
 ): Error {
   const t = text.toLowerCase();
   if (t.includes("does not support tools")) return new OllamaToolsUnsupportedError(model);
-  if (status === 404 || t.includes("not found")) return new OllamaModelMissingError(model);
+  if (status === 404 || t.includes("not found")) {
+    return new OllamaModelMissingError(`${model} — ${OLLAMA_MODEL_MISSING_SUFFIX}`);
+  }
   return new Error(`Ollama error: ${text.slice(0, 300)}`);
 }
 
@@ -395,7 +417,7 @@ export async function ollamaChatCore(
  * Native fetch; a refused/failed connection becomes OllamaNotReachableError,
  * a non-2xx response is classified before a single chunk is yielded.
  */
-export function ollamaHttpStream(baseUrl: string = OLLAMA_BASE_URL): OllamaStream {
+export function ollamaHttpStream(baseUrl: string = ollamaBaseUrl()): OllamaStream {
   return async function* (req: OllamaChatRequest) {
     let res: Response;
     try {
@@ -405,7 +427,9 @@ export function ollamaHttpStream(baseUrl: string = OLLAMA_BASE_URL): OllamaStrea
         body: JSON.stringify({ ...req, stream: true }),
       });
     } catch {
-      throw new OllamaNotReachableError(hostLabel(baseUrl));
+      throw new OllamaNotReachableError(
+        `Is the Ollama app running at ${hostLabel(baseUrl)}?`,
+      );
     }
     if (!res.ok) {
       const body = await res.text().catch(() => "");
@@ -455,12 +479,68 @@ export async function ollamaChat(
   return ollamaChatCore(model, params, productionDeps(), hooks);
 }
 
-/** Prompt-shaped entry (mirrors llm.ts runPrompt). A later task fills this in. */
+/**
+ * Prompt-shaped entry (mirrors llm.ts runPrompt): one non-streaming
+ * `POST /api/chat` turn, text in, text out. Deliberately toolless — the
+ * enrichment prompt's WebFetch option is a Claude-provider capability, so
+ * `opts.tools`/`allowedTools`/`maxTurns` are ignored here; only `opts.model`
+ * (falling back to the seam-bound config model) is honoured.
+ *
+ * No request timeout: local generation legitimately runs for minutes on a
+ * cold model. An unreachable daemon still fails fast — the connection itself
+ * is refused.
+ */
 export async function ollamaPrompt(
-  _text: string,
-  _opts: RunPromptOptions = {},
+  text: string,
+  opts: RunPromptOptions = {},
+  baseUrl: string = ollamaBaseUrl(),
 ): Promise<string> {
-  throw new OllamaNotImplementedError("prompt (chat landed in T3; prompt/enrich come later)");
+  const model = opts.model ?? "";
+  let res: Response;
+  try {
+    res = await fetch(`${baseUrl}/api/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: "user", content: text }],
+        stream: false,
+      }),
+    });
+  } catch (err) {
+    throw new OllamaNotReachableError(
+      `Is the Ollama daemon running at ${baseUrl}? (${(err as Error).message})`,
+    );
+  }
+  if (!res.ok) {
+    const detail = await res
+      .text()
+      .then((body) => {
+        try {
+          const parsed = JSON.parse(body) as { error?: unknown };
+          return typeof parsed.error === "string" ? parsed.error : body;
+        } catch {
+          return body;
+        }
+      })
+      .catch(() => "");
+    // Ollama answers 404 for a model it does not hold ("model 'x' not found,
+    // try pulling it first"). Everything else stays a plain error.
+    if (res.status === 404) {
+      throw new OllamaModelMissingError(
+        `${model === "" ? "(no model configured)" : model} — ${detail || "not found"}`,
+      );
+    }
+    throw new Error(`Ollama request failed (HTTP ${res.status}): ${detail}`);
+  }
+  const body = (await res.json().catch(() => null)) as {
+    message?: { content?: unknown };
+  } | null;
+  const content = body?.message?.content;
+  if (typeof content !== "string") {
+    throw new Error("Ollama reply had no message content");
+  }
+  return content;
 }
 
 export interface OllamaStatus {
