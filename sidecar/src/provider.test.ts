@@ -1,16 +1,15 @@
 // Provider seam (T2). Pure config parsing/defaulting and routing only — the
 // claude path is never invoked here (it would spawn the Agent SDK), and the
-// ollama chat path is a typed stub until T3 (the prompt path is real, tested
-// in ollama.test.ts). probeOllama is exercised against a throwaway local HTTP
+// ollama paths (both real: T3 chat, T4 prompt) are only entered as far as
+// no-HTTP guards / typed connection failures; their guts are tested in
+// ollama.test.ts. probeOllama is exercised against a throwaway local HTTP
 // server, so no test depends on a running Ollama.
 import assert from "node:assert/strict";
 import http from "node:http";
 import { test } from "node:test";
 import {
-  OLLAMA_NOT_IMPLEMENTED_PREFIX,
-  OllamaNotImplementedError,
+  OllamaNoModelError,
   OllamaNotReachableError,
-  ollamaChat,
   probeOllama,
 } from "./ollama.ts";
 import {
@@ -50,8 +49,8 @@ test("an unknown provider falls back to claude", () => {
 
 test("a blank model defaults per provider (claude default; ollama empty)", () => {
   assert.deepEqual(coerceLlmConfig({ provider: "claude", model: "  " }), DEFAULT_LLM_CONFIG);
-  // No sensible default ollama model exists until T3 talks to the daemon;
-  // an empty model is the typed "not chosen yet" the settings UI fills in.
+  // No sensible default ollama model exists; an empty model is the typed
+  // "not chosen yet" the settings UI fills in from what the daemon holds.
   assert.deepEqual(coerceLlmConfig({ provider: "ollama" }), {
     provider: "ollama",
     model: "",
@@ -84,22 +83,6 @@ test("model precedence: explicit > STASH_MODEL > config > default", () => {
   }
 });
 
-// --- the ollama chat stub: typed, stable-prefixed not-implemented ------------
-
-test("ollama chat entry throws the typed not-implemented error", async () => {
-  await assert.rejects(
-    () => ollamaChat({ vaultDir: "/tmp", text: "hi" }),
-    (err: unknown) => {
-      assert.ok(err instanceof OllamaNotImplementedError);
-      assert.ok(
-        (err as Error).message.startsWith(OLLAMA_NOT_IMPLEMENTED_PREFIX),
-        `stable prefix missing: ${(err as Error).message}`,
-      );
-      return true;
-    },
-  );
-});
-
 test("the seam routes provider ollama to the ollama module (no SDK spawn)", async () => {
   const config = { provider: "ollama" as const, model: "llama3.2:3b" };
   // The prompt path is real now, so point it at a port nothing listens on:
@@ -122,9 +105,12 @@ test("the seam routes provider ollama to the ollama module (no SDK spawn)", asyn
     if (saved === undefined) delete process.env["STASH_OLLAMA_URL"];
     else process.env["STASH_OLLAMA_URL"] = saved;
   }
+  // Chat routes to the real ollama path (T3): a blank configured model is its
+  // typed pick-a-model error, thrown before any HTTP — proof of routing that
+  // needs neither a daemon nor an SDK spawn.
   await assert.rejects(
-    () => providerChatTurn(config, { vaultDir: "/tmp", text: "hello" }),
-    OllamaNotImplementedError,
+    () => providerChatTurn({ provider: "ollama", model: "" }, { vaultDir: "/tmp", text: "hello" }),
+    OllamaNoModelError,
   );
 });
 

@@ -6,8 +6,9 @@
 //   provider "claude" -> llm.ts runPrompt (the Agent SDK), with the model
 //                        resolved by the precedence documented on
 //                        resolveClaudeModel below;
-//   provider "ollama" -> ollama.ts (prompt path real since T4; chat is a
-//                        typed not-implemented stub until T3).
+//   provider "ollama" -> ollama.ts (both shapes real: chat is the T3 tool
+//                        loop with RAG-lite fallback; prompt is the T4
+//                        single-shot /api/chat call).
 //
 // Deliberately not a plugin architecture: two providers, one if/else.
 import { chatTurn, type ChatTurnParams, type ChatTurnResult } from "./chat.ts";
@@ -35,8 +36,9 @@ export const DEFAULT_LLM_CONFIG: LlmConfig = {
  * Tolerant coercion of the `llm` request params into a usable config: an
  * absent/malformed object or an unknown provider falls back to the claude
  * default; a blank model becomes the claude default under claude and stays
- * empty under ollama (no meaningful default exists until T3 can ask the
- * daemon what is installed).
+ * empty under ollama (no meaningful default exists — the settings UI fills
+ * one in from what the daemon holds, and ollamaChat types a blank model as
+ * its pick-a-model error).
  */
 export function coerceLlmConfig(value: unknown): LlmConfig {
   const v = value as { provider?: unknown; model?: unknown } | null | undefined;
@@ -105,6 +107,8 @@ export async function providerChatTurn(
   params: ChatTurnParams,
   hooks: { onText?(delta: string): void } = {},
 ): Promise<ChatTurnResult> {
-  if (config.provider === "ollama") return ollamaChat(params, hooks);
+  // Ollama gets the configured model verbatim (a blank one is its typed
+  // "pick a model in Settings" error, not a default).
+  if (config.provider === "ollama") return ollamaChat(config.model, params, hooks);
   return chatTurn(params, { runPrompt: providerRunPrompt(config) }, hooks);
 }

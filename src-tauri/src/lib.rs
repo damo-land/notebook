@@ -1267,6 +1267,10 @@ async fn chat_send(
     text: String,
     session: Option<String>,
     turn: String,
+    // Prior turns of the frontend transcript, passed through UNTOUCHED: the
+    // sidecar's ollama provider replays them for conversation continuity
+    // (no server-side session exists there); the claude path ignores them.
+    history: Option<serde_json::Value>,
 ) -> Result<ChatReply, String> {
     // LLM config is read fresh from disk PER TURN (never cached): a provider
     // or model change in settings applies to the next message, no restart.
@@ -1278,6 +1282,7 @@ async fn chat_send(
             "text": text,
             "session": session,
             "turn": turn,
+            "history": history,
             "llm": llm,
         })),
     )?;

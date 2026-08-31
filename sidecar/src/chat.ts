@@ -7,7 +7,7 @@
 // so continuity is the SDK's own `resume`, and the human-readable transcript
 // lives only in the frontend's React state for the length of the session.
 // Nothing here writes anything, to the vault or anywhere else.
-import { runPrompt, type RunPromptOptions } from "./llm.ts";
+import type { RunPromptOptions } from "./llm.ts";
 
 /**
  * Built-in tools a chat turn may use. Read-only by construction: no Write, no
@@ -39,6 +39,16 @@ export const CHAT_SYSTEM_APPEND =
   "memory. Cite the id of every note you used. Keep answers short and plain; no " +
   "preamble, no sign-off. If nothing in the vault matches, say so.";
 
+/**
+ * One prior turn of the frontend's transcript, replayed for providers without
+ * server-side sessions. Only the ollama path (ollama.ts) reads it — the
+ * claude path's continuity is the SDK's own `resume` and ignores it.
+ */
+export interface ChatHistoryTurn {
+  role: "user" | "assistant";
+  content: string;
+}
+
 export interface ChatTurnParams {
   /** Vault directory. Becomes the session's working directory. */
   vaultDir: string;
@@ -46,6 +56,8 @@ export interface ChatTurnParams {
   text: string;
   /** SDK session id from the previous turn, when continuing a conversation. */
   session?: string;
+  /** Prior turns for transcript replay (ollama only; unused by chatTurn). */
+  history?: ChatHistoryTurn[];
 }
 
 export interface ChatTurnResult {
@@ -113,6 +125,3 @@ export async function chatTurn(
   });
   return { text, session };
 }
-
-/** Production dependencies: the real SDK call. */
-export const chatDeps: ChatDeps = { runPrompt };
