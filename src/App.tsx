@@ -369,10 +369,17 @@ function App() {
       // keydown-triggered UI (the T2 inline "/" menu) only exists for TYPED
       // text, so a bulk insertText would stage none of it. React's root
       // listener picks the synthetic keydown up like a real one.
+      // A newline in the value is Enter, not text: dispatch the key and give
+      // the view a moment to act on it (a wizard step saves and advances).
       for (const ch of input.typed) {
+        const key = ch === "\n" ? "Enter" : ch;
         document.activeElement?.dispatchEvent(
-          new KeyboardEvent("keydown", { key: ch, bubbles: true, cancelable: true })
+          new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })
         );
+        if (key === "Enter") {
+          await sleep(1500);
+          continue;
+        }
         document.execCommand("insertText", false, ch);
       }
     })().catch((err) => console.error("shoot hook failed:", err));

@@ -10,6 +10,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "sidecar:install": "npm --prefix sidecar install",
+    "sidecar:stage": "scripts/stage-sidecar.sh",
     "sidecar:smoke": "npm --prefix sidecar run smoke",
     "sidecar:mcp": "npm --prefix sidecar run mcp",
     "sidecar:mcp:demo": "npm --prefix sidecar run mcp:demo",

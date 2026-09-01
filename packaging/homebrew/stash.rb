@@ -23,6 +23,14 @@ cask "stash" do
 
   app "stash.app"
 
+  # The agent sidecar is a Node process bundled inside the .app
+  # (Contents/Resources/sidecar-dist, staged by scripts/stage-sidecar.sh), but
+  # the node runtime itself is not — the app discovers it at
+  # /opt/homebrew/bin/node or /usr/local/bin/node, since a GUI app inherits no
+  # shell PATH. Without it the settings view reports "node is not installed"
+  # and chat/enrichment do nothing.
+  depends_on formula: "node"
+
   zap trash: [
     "~/.config/stash",                  # vault location config / app settings
     "~/Library/Caches/land.damo.stash", # app cache (keyed by bundle identifier)

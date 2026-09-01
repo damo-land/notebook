@@ -102,6 +102,14 @@ command -v xcrun >/dev/null || { echo "error: xcrun not found (install Xcode CLT
 # --- 1. Build -----------------------------------------------------------------
 # APPLE_SIGNING_IDENTITY in the env makes tauri sign the .app (and the dmg's
 # embedded copy) during the build, so the dmg contains the signed app.
+#
+# The build's beforeBuildCommand stages the Node sidecar into the bundle
+# (scripts/stage-sidecar.sh -> Contents/Resources/sidecar-dist). That tree
+# contains NESTED EXECUTABLES — notably the Claude Agent SDK's prebuilt
+# `claude` binary — and notarization rejects a bundle whose nested Mach-O
+# files are unsigned. The first signed release needs that checked: sign the
+# inner binaries before the outer .app (codesign inside-out), or confirm the
+# notary log is clean. Unsigned local builds are unaffected.
 
 echo "==> Building $APP_NAME $VERSION"
 npm run tauri build

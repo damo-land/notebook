@@ -6,7 +6,7 @@
 
 use stash_lib::index::{due_alerts, list_tasks, note_count, open_db, reindex, search_notes};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn scratch_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -18,7 +18,7 @@ fn scratch_dir(name: &str) -> PathBuf {
     dir
 }
 
-fn write_note(vault: &PathBuf, name: &str, fm: &str, body: &str) {
+fn write_note(vault: &Path, name: &str, fm: &str, body: &str) {
     fs::write(vault.join(name), format!("---\n{fm}\n---\n{body}")).unwrap();
 }
 

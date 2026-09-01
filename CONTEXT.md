@@ -51,3 +51,8 @@ Spotlight-style personal note capture + knowledge vault. Resident overlay
   over vault first; holo-style persona is fast-follow.
 - 2026-08-28: Tauri v2 + TS over Swift — TS fluency + UI iteration speed on
   the morphing editor outweigh last ~5% of native overlay feel.
+- 2026-09-01: Sidecar ships INSIDE the .app — `scripts/stage-sidecar.sh` stages
+  source + `npm ci --omit=dev` into a bundle resource; no bundler, so the
+  bundled tree runs identically to dev.
+  `node` stays a prerequisite (cask `depends_on`), discovered by explicit path
+  because a GUI app inherits no shell PATH.

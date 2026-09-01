@@ -40,6 +40,10 @@
 #                beforehand is gone from it, because dismissal clears state.
 #                Give the run a longer SHOOT_SETTLE (say 5) so the capture
 #                happens after the cycle rather than during it.
+#                A "\n" in the value is dispatched as Enter (a key, not text)
+#                with a pause after it, so a run can confirm a view — e.g.
+#                SHOOT_TYPE='\n\n' walks the first-run wizard's two steps and
+#                the shot shows where they landed.
 #   SHOOT_LABEL  basename for the PNG and dev log, so repeated runs of one view
 #                with different text do not overwrite each other.
 #

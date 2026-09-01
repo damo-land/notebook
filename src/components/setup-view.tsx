@@ -10,17 +10,23 @@
 //
 //   settings (tray): header (icon, name, version from the build), the Vault
 //   section prefilled with the CONFIGURED path, and the AI section — all
-//   visible at once. Enter saves only what changed, Esc closes.
+//   visible at once. Enter saves only what changed, Esc closes. "What
+//   changed" is measured against what config.json actually HOLDS
+//   (readStoredConfig), not against the values getVaultDir/get_llm_config
+//   resolve to: on an unconfigured machine every field would otherwise read
+//   as unchanged and Enter would save nothing at all.
 //
 // Probes poll while the AI section is open (settings-overhaul T1):
 // claude_auth_status and ollama_status re-fire every 4s until each returns a
 // definitive result, then every 15s so external changes (daemon stopped,
 // token revoked) still surface. A rejected invoke means the SIDECAR is
 // unreachable — the sidecar boots asynchronously after app start — which is
-// NOT "unauthenticated"/"not running": it renders as "checking…" until the
-// first definitive result, and as "sidecar unreachable" if the sidecar drops
-// out later. The effect's cleanup clears every pending timer, so nothing
-// fires after the view unmounts.
+// NOT "unauthenticated"/"not running": it renders as "checking…" for the
+// first SIDECAR_BOOT_GRACE attempts, then as "sidecar unreachable" with the
+// reason named once below both lines. "checking…" is never permanent — a
+// sidecar that never starts at all says why instead of checking forever.
+// The effect's cleanup clears every pending timer, so nothing fires after the
+// view unmounts.
 //
 // Save sequencing (T2 audit): set_vault_dir, set_llm_config and
 // set_autostart all read-modify-write config.json and must never run
@@ -33,7 +39,7 @@ import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { suggestVaultPath } from "../lib/obsidian-vaults";
-import { getVaultDir } from "../lib/vault";
+import { getVaultDir, readStoredConfig } from "../lib/vault";
 import { homeDir, tauriVaultFs } from "../lib/vault-fs";
 import { useFocusOnOverlayShown } from "../lib/overlay";
 import {
@@ -77,18 +83,29 @@ interface OllamaStartResult {
 /**
  * One provider's probe state. "pending" until the first definitive result
  * (a resolved invoke) lands; a rejected invoke means the sidecar itself is
- * unreachable, which stays "pending" before any definitive result (the
- * sidecar is likely still booting) and becomes "unreachable" after one (the
- * sidecar dropped out — we can no longer say anything about the provider).
+ * unreachable, which stays "pending" for the first few attempts (the sidecar
+ * boots asynchronously after app start) and then becomes "unreachable",
+ * carrying the reason the invoke gave.
  */
 type ProbeState<T> =
   | { kind: "pending" }
-  | { kind: "unreachable" }
+  | { kind: "unreachable"; why: string }
   | { kind: "done"; value: T };
 
 /** Probe cadence: fast until a definitive result, slow afterwards. */
 const FAST_POLL_MS = 4000;
 const SLOW_POLL_MS = 15000;
+
+/**
+ * Rejected probes tolerated as "the sidecar is still booting" before the
+ * failure is reported.
+ *
+ * "checking…" must never be a permanent state: a sidecar that never starts
+ * at all (no node on the PATH a .app bundle inherits, say) rejects every
+ * probe forever, and reporting that as "still checking" hides the one thing
+ * the user could act on. Past the grace the status line names the reason.
+ */
+const SIDECAR_BOOT_GRACE = 2;
 
 /** The command the auth guidance names and copies (settings-overhaul T3). */
 const SETUP_TOKEN_CMD = "claude setup-token";
@@ -150,6 +167,16 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
   const [initialAutostart, setInitialAutostart] = useState<boolean | null>(null);
   const autostartDisabled = mode === "settings" && initialAutostart === null;
 
+  // `firstRun` can arrive AFTER mount (App learns it from the async
+  // needs_setup probe), and the useState initialiser above only ever runs
+  // once — so without this the wizard's default-CHECKED box silently mounts
+  // unchecked and "Enter, Enter on a fresh machine enables autostart" writes
+  // `false`. firstRun only ever goes true -> false (onDone), so this asserts
+  // the wizard default exactly once.
+  useEffect(() => {
+    if (firstRun) setAutostart(WIZARD_AUTOSTART_DEFAULT);
+  }, [firstRun]);
+
   const [claudeProbe, setClaudeProbe] = useState<ProbeState<ClaudeStatus>>({ kind: "pending" });
   const [ollamaState, setOllamaState] = useState<ProbeState<OllamaProbe>>({ kind: "pending" });
   // The shape the settings-flow helpers take: null until a definitive probe.
@@ -199,11 +226,19 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
       }
       const dir = await getVaultDir(tauriVaultFs, home);
       const cfg = await invoke<{ provider: string; model: string }>("get_llm_config");
+      // The initial values are what is SAVED, not what resolves: both reads
+      // above fall back to defaults (~/Stash, claude/claude-haiku-4-5) when
+      // config.json is absent, and seeding the initials from them made
+      // savePlan see the untouched defaults as "nothing changed" — Enter
+      // saved NOTHING and closed, leaving no config file behind. An absent
+      // key means no initial state to diff against, which is exactly what
+      // savePlan's null/empty initials mean: write the defaults out.
+      const stored = await readStoredConfig(tauriVaultFs, home);
       if (cancelled) return;
       setPath(dir);
-      setInitialPath(dir);
+      setInitialPath(typeof stored?.vaultDir === "string" && stored.vaultDir ? dir : "");
       setLlm(initialLlmChoice(cfg));
-      setInitialLlm(cfg);
+      setInitialLlm(stored?.llm ? cfg : null);
     })().catch((err) => console.error("settings prefill failed:", err));
     return () => {
       cancelled = true;
@@ -243,44 +278,39 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
       timers.add(t);
     };
 
-    /** Loop one probe; it reports whether it got a definitive result. */
-    const loop = (probe: () => Promise<boolean>) => {
+    /**
+     * Poll one probe into `set`. A resolved invoke is a definitive result and
+     * drops the loop to the slow cadence; a rejected one means the sidecar is
+     * unreachable, tolerated as "still booting" for SIDECAR_BOOT_GRACE
+     * attempts and then reported with the reason the invoke gave.
+     */
+    const loop = <T,>(call: () => Promise<T>, set: (state: ProbeState<T>) => void) => {
       let definitive = false;
+      let failures = 0;
       const tick = () => {
-        void probe().then((ok) => {
-          if (cancelled) return;
-          if (ok) definitive = true;
-          schedule(tick, definitive ? SLOW_POLL_MS : FAST_POLL_MS);
-        });
+        void call().then(
+          (value) => {
+            if (cancelled) return;
+            definitive = true;
+            failures = 0;
+            set({ kind: "done", value });
+            schedule(tick, SLOW_POLL_MS);
+          },
+          (err) => {
+            if (cancelled) return;
+            failures += 1;
+            if (definitive || failures > SIDECAR_BOOT_GRACE) {
+              set({ kind: "unreachable", why: String(err) });
+            }
+            schedule(tick, definitive ? SLOW_POLL_MS : FAST_POLL_MS);
+          }
+        );
       };
       schedule(tick, 0);
     };
 
-    // A rejected invoke = sidecar unreachable: keep "pending" before any
-    // definitive result, flip to "unreachable" after one.
-    const sidecarDown = <T,>(prev: ProbeState<T>): ProbeState<T> =>
-      prev.kind === "pending" ? prev : { kind: "unreachable" };
-
-    loop(async () => {
-      try {
-        const status = await invoke<ClaudeStatus>("claude_auth_status");
-        if (!cancelled) setClaudeProbe({ kind: "done", value: status });
-        return true;
-      } catch {
-        if (!cancelled) setClaudeProbe(sidecarDown);
-        return false;
-      }
-    });
-    loop(async () => {
-      try {
-        const probe = await invoke<OllamaProbe>("ollama_status");
-        if (!cancelled) setOllamaState({ kind: "done", value: probe });
-        return true;
-      } catch {
-        if (!cancelled) setOllamaState(sidecarDown);
-        return false;
-      }
-    });
+    loop(() => invoke<ClaudeStatus>("claude_auth_status"), setClaudeProbe);
+    loop(() => invoke<OllamaProbe>("ollama_status"), setOllamaState);
 
     return () => {
       cancelled = true;
@@ -517,6 +547,14 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
   // and never while running. The inline start error follows the same guard,
   // so a stale error can't linger under a "running" line.
   const ollamaDown = ollamaState.kind === "done" && !ollamaState.value.reachable;
+  // Why the sidecar is unreachable, once: the cause is shared by both
+  // providers, so printing it on each status line only repeats itself.
+  const sidecarWhy =
+    claudeProbe.kind === "unreachable"
+      ? claudeProbe.why
+      : ollamaState.kind === "unreachable"
+        ? ollamaState.why
+        : null;
 
   const hint = firstRun
     ? wizard.step === "vault"
@@ -625,6 +663,7 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
             {ollamaDown && ollamaStartError !== null && (
               <div className="field-parse field-parse-bad">{ollamaStartError}</div>
             )}
+            {sidecarWhy !== null && <div className="field-parse field-parse-bad">{sidecarWhy}</div>}
           </div>
           <div className="field-editor">
             <span className="field-label">startup</span>

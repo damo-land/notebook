@@ -214,22 +214,37 @@ export async function listNotes(fs: VaultFs, vaultDir: string): Promise<NoteList
 const LEGACY_VAULT_DIR_NAME = "Note" + "book";
 
 /**
+ * The config file's parsed root, or null when it is absent or unparseable.
+ *
+ * Separate from [`getVaultDir`] because the two questions are different and
+ * the settings view needs both: "which vault do we USE" (always answerable —
+ * it falls back to a default) and "what has actually been SAVED" (null on a
+ * machine that was never set up). Diffing a settings save against the
+ * resolved default instead of against the stored value is how Enter came to
+ * save nothing at all on a fresh machine: every field looked unchanged.
+ */
+export async function readStoredConfig(
+  fs: VaultFs,
+  homeDir: string
+): Promise<Record<string, unknown> | null> {
+  try {
+    const root = JSON.parse(await fs.readFile(`${homeDir}/.config/stash/config.json`));
+    return typeof root === "object" && root !== null ? (root as Record<string, unknown>) : null;
+  } catch {
+    return null; // no config file yet, or malformed
+  }
+}
+
+/**
  * Resolves the vault dir: `~/.config/stash/config.json` `{ "vaultDir" }`
  * if present, else the pre-rename `<homeDir>/<legacy>` dir when it exists
  * on disk, else `<homeDir>/Stash`. A leading `~` in the configured value
  * expands to homeDir.
  */
 export async function getVaultDir(fs: VaultFs, homeDir: string): Promise<string> {
-  try {
-    const raw = await fs.readFile(`${homeDir}/.config/stash/config.json`);
-    const cfg = JSON.parse(raw);
-    if (typeof cfg.vaultDir === "string" && cfg.vaultDir) {
-      return cfg.vaultDir.startsWith("~")
-        ? homeDir + cfg.vaultDir.slice(1)
-        : cfg.vaultDir;
-    }
-  } catch {
-    // missing or malformed config -> fall through
+  const cfg = await readStoredConfig(fs, homeDir);
+  if (cfg && typeof cfg.vaultDir === "string" && cfg.vaultDir) {
+    return cfg.vaultDir.startsWith("~") ? homeDir + cfg.vaultDir.slice(1) : cfg.vaultDir;
   }
   // Legacy fallback: keep using a pre-rename vault dir when it exists so the
   // rename never strands an existing vault. readdir doubles as the existence

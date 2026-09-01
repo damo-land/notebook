@@ -10,6 +10,7 @@
 
 import assert from "node:assert";
 import { CLAUDE_MODELS, DEFAULT_CLAUDE_MODEL } from "../src/lib/llm-models";
+import { readStoredConfig } from "../src/lib/vault";
 import {
   OLLAMA_DOWN,
   OLLAMA_PULL_HINT,
@@ -251,3 +252,63 @@ assert.strictEqual(escCloses("settings"), true);
 }
 
 console.log("settings-flow demo: all assertions passed");
+
+// --- what the settings view feeds savePlan as "initial" -----------------------
+//
+// The regression this guards: getVaultDir and get_llm_config both RESOLVE to
+// defaults when config.json is absent, so seeding savePlan's initials from
+// them made every field on a never-configured machine read as unchanged —
+// Enter produced an empty plan, saved nothing, and closed. The initials must
+// come from what the file actually HOLDS (readStoredConfig).
+
+{
+  const HOME = "/home/u";
+  const RESOLVED = `${HOME}/Stash`; // getVaultDir's default when nothing is stored
+  const cfg = { provider: "claude", model: DEFAULT_CLAUDE_MODEL }; // get_llm_config's default
+
+  /** The prefill rule in src/components/setup-view.tsx, as data. */
+  const initialsFrom = (stored: Record<string, unknown> | null) => ({
+    initialVaultPath: typeof stored?.vaultDir === "string" && stored.vaultDir ? RESOLVED : "",
+    initialLlm: stored?.llm ? cfg : null,
+  });
+
+  const fs = {
+    // Only the config file matters here; a missing one throws, like vault_read_file.
+    make: (raw: string | null) => ({
+      readFile: async (p: string) => {
+        if (p === `${HOME}/.config/stash/config.json` && raw !== null) return raw;
+        throw new Error(`ENOENT ${p}`);
+      },
+      writeFile: async () => {},
+      readdir: async () => {
+        throw new Error("ENOENT");
+      },
+      mkdir: async () => {},
+    }),
+  };
+
+  const untouched = { llm: initialLlmChoice(cfg), autostart: false, vaultPath: RESOLVED };
+
+  // Nothing stored: an untouched Enter writes the defaults out — vault first.
+  const fresh = await readStoredConfig(fs.make(null), HOME);
+  assert.strictEqual(fresh, null);
+  assert.deepStrictEqual(savePlan({ ...initialsFrom(fresh), initialAutostart: false, ...untouched }), [
+    { cmd: "set_vault_dir", path: RESOLVED },
+    { cmd: "set_llm_config", provider: "claude", model: DEFAULT_CLAUDE_MODEL },
+  ]);
+
+  // Fully configured: the same untouched Enter writes NOTHING.
+  const saved = await readStoredConfig(
+    fs.make(JSON.stringify({ vaultDir: RESOLVED, llm: cfg })),
+    HOME
+  );
+  assert.deepStrictEqual(savePlan({ ...initialsFrom(saved), initialAutostart: false, ...untouched }), []);
+
+  // Half-configured (vault stored, llm never written): only the llm is saved.
+  const partial = await readStoredConfig(fs.make(JSON.stringify({ vaultDir: RESOLVED })), HOME);
+  assert.deepStrictEqual(savePlan({ ...initialsFrom(partial), initialAutostart: false, ...untouched }), [
+    { cmd: "set_llm_config", provider: "claude", model: DEFAULT_CLAUDE_MODEL },
+  ]);
+}
+
+console.log("settings-flow demo: initials-from-stored-config assertions passed");
