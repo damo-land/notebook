@@ -294,14 +294,28 @@ body {
   color: var(--accent-bad);
 }
 
-/* settings / setup view (T5): header + AI section. Fields reuse the
-   field-editor row; the selects are native (keyboard support for free),
-   styled down to the overlay's tokens. */
+/* settings / setup view (T5, restyled in settings-overhaul T4): header + AI
+   section. Fields reuse the field-editor row; the selects are native
+   (keyboard support for free) but wear NONE of the native macOS chrome —
+   `appearance: none`, a data-URI chevron, and the overlay's tokens.
+
+   One spacing system for the whole view: a 12px gutter on every row (the
+   same gutter every other view uses), 10px vertical padding per row, and
+   the hairline each .field-editor already carries separating the sections.
+   The view fills the window — .overlay is a flex row, so without an
+   explicit width the column shrinks to its content and leaves a dead
+   right-hand column. */
+.setup-view {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+
 .settings-header {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 12px 4px;
+  padding: 10px 12px;
 }
 
 .settings-icon {
@@ -321,15 +335,32 @@ body {
   color: var(--text-tertiary);
 }
 
+/* Additive scope, not a .field-editor change: settings rows get the shared
+   10px/12px rhythm without touching the class the capture view also uses. */
+.setup-view .field-editor {
+  margin-top: 0;
+  padding: 10px 12px;
+}
+
 .settings-select {
+  /* Kill the native macOS gradient button; the chevron is ours. */
+  appearance: none;
+  -webkit-appearance: none;
   font-family: var(--font-system);
-  font-size: 14px;
+  font-size: 13px;
   color: var(--text-primary);
-  background: transparent;
+  background-color: rgba(255, 255, 255, 0.07);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath d='M1 1l3 3 3-3' fill='none' stroke='rgba(255,255,255,0.55)' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
   border: 1px solid var(--hairline);
   border-radius: 6px;
-  padding: 3px 6px;
+  padding: 4px 26px 4px 10px;
   outline: none;
+}
+
+.settings-select:hover {
+  background-color: rgba(255, 255, 255, 0.1);
 }
 
 /* Keyboard-first: the focused field must be visible while Tab cycles. */
@@ -340,6 +371,34 @@ body {
 .settings-note {
   font-size: 12px;
   color: var(--text-tertiary);
+}
+
+/* Small action button (T2 Start, T3 copy command): same quiet chrome as the
+   selects, sized to sit inside a 12px status line. */
+.settings-btn {
+  font-family: var(--font-system);
+  font-size: 11px;
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid var(--hairline);
+  border-radius: 5px;
+  padding: 2px 9px;
+  cursor: pointer;
+}
+
+.settings-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.settings-btn:disabled {
+  color: var(--text-tertiary);
+  background: rgba(255, 255, 255, 0.04);
+  cursor: default;
+}
+
+.settings-btn:focus {
+  outline: 2px solid var(--text-tertiary);
+  outline-offset: 1px;
 }
 
 /* "Launch at login" checkbox — native input, keyboard-first focus ring. */
@@ -356,36 +415,42 @@ body {
   outline-offset: 1px;
 }
 
-/* provider status lines (claude auth / ollama reachability) */
+/* provider status lines (claude auth / ollama reachability) — part of the
+   AI section: same 12px gutter, closing the section with its own bottom
+   padding. T2's Start button and error line and T3's guidance line all live
+   in this block and inherit the rhythm. */
 .settings-status {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 2px 12px 6px;
+  gap: 5px;
+  padding: 0 12px 10px;
   font-size: 12px;
   color: var(--text-secondary);
 }
 
-/* Start button beside the "not running" ollama status line (T2). */
-.settings-start-btn {
-  margin-left: 8px;
+.settings-status code {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
   font-size: 11px;
   color: var(--text-primary);
-  background: transparent;
-  border: 1px solid var(--text-tertiary);
-  border-radius: 5px;
-  padding: 1px 8px;
-  cursor: pointer;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  padding: 1px 5px;
 }
 
-.settings-start-btn:disabled {
-  color: var(--text-tertiary);
-  cursor: default;
+/* Start button beside the "not running" ollama status line (T2): the shared
+   .settings-btn chrome plus its inline offset. */
+.settings-start-btn {
+  margin-left: 8px;
 }
 
-.settings-start-btn:focus {
-  outline: 2px solid var(--text-tertiary);
-  outline-offset: 1px;
+/* Footer hint/error line: overrides .tasks-empty/.under-input down to the
+   settings rhythm — metadata size, same 12px gutter, hairline kept from
+   .under-input. Scoped selector so it outranks both regardless of where
+   they sit in this file. */
+.setup-view .settings-footer {
+  margin-top: 0;
+  padding: 10px 12px;
+  font-size: 12px;
 }
 
 /* tasks view (T8) */

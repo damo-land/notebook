@@ -325,6 +325,11 @@ function App() {
       if (!target) return;
       if (target === "tasks" || target === "search" || target === "chat") {
         setView(target);
+      } else if (target === "settings") {
+        // The tray's Settings… view. The harness sets STASH_VAULT_DIR, so
+        // needs_setup is false and the view opens in settings mode, not the
+        // first-run wizard.
+        setView("setup");
       } else if (target === "editor") {
         // The editor only exists for a note that exists: open the first one in
         // the vault. An empty vault is a hard error — the harness then times
