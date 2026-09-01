@@ -12,11 +12,15 @@ scripts/release.sh --dry-run # print the plan, touch nothing
 scripts/release.sh           # build → sign → notarize → staple → GitHub release
 ```
 
-A plain local build (unsigned, no credentials needed):
+A plain local build (unsigned, no credentials needed) — from a clean checkout
+all it takes is `npm install` at the repo root (its `postinstall` installs the
+sidecar's dependencies too; no manual sidecar step), plus cargo on PATH:
 
 ```sh
+npm install
 npm run tauri build
-# outputs:
+# outputs (self-contained: node + claude runtimes and the sidecar bundle
+# are inside the .app; the dmg is ~120 MB because of them):
 #   src-tauri/target/release/bundle/macos/stash.app
 #   src-tauri/target/release/bundle/dmg/stash_<version>_<arch>.dmg
 ```
@@ -77,11 +81,25 @@ export GITHUB_REPO="damo/stash"
 ## What the script does
 
 1. Reads the version from `src-tauri/tauri.conf.json` (bump it there before
-   releasing; the tag is `v<version>`).
-2. `npm run tauri build` — with `APPLE_SIGNING_IDENTITY` in the env, Tauri
-   signs the app during the build, so the dmg contains a signed copy.
-3. Re-runs `codesign --deep --force --options runtime` on the `.app` and signs
-   the dmg wrapper.
+   releasing; the tag is `v<version>`). Ensures cargo is on PATH (extends it
+   with `~/.cargo/bin` if needed, fails early otherwise — npm-spawned
+   `tauri build` inherits the script's PATH).
+2. `npm run tauri build` — the `beforeBuildCommand` bundles the sidecar
+   (`sidecar-bundle.mjs`) and stages the node + claude runtimes into the
+   `.app`; with `APPLE_SIGNING_IDENTITY` in the env, Tauri signs the app
+   *and* the bundled node/claude executables with the JIT entitlements from
+   `src-tauri/entitlements.plist` during the build, so the dmg contains a
+   correctly signed copy.
+3. Targeted re-sign of the `.app` — **never `codesign --deep`**: a deep
+   re-sign stamps nested code with no entitlements, stripping
+   `com.apple.security.cs.allow-jit` / `allow-unsigned-executable-memory`
+   from the bundled node and claude (both embed JIT runtimes and crash on
+   launch without them). Instead the script signs inside-out: node and
+   claude individually with `--options runtime` and the entitlements file,
+   then the `.app` itself; verifies the signature and asserts the JIT
+   entitlements survived; mounts the dmg read-only and asserts its embedded
+   copy (Tauri's build-time signature) carries them too; then signs the dmg
+   wrapper.
 4. `xcrun notarytool submit --wait` on the dmg, then `xcrun stapler staple`.
 5. Prints the dmg's `shasum -a 256` — this is the sha256 the Homebrew cask
    needs.
@@ -93,6 +111,29 @@ export GITHUB_REPO="damo/stash"
 
 `--dry-run` prints all of the above with resolved versions/paths (identities
 masked) and exits before anything is signed or uploaded.
+
+## Clean-machine acceptance checklist (manual release gate)
+
+The release is not done when the dmg is uploaded. Before announcing it (or
+updating the tap), run this checklist on a **fresh macOS user account** (or a
+clean machine) — one with no node, no repo checkout, no dev tools:
+
+1. **Install from the dmg**: download the released dmg, open it, drag
+   stash.app to Applications, launch it. It must open without Gatekeeper
+   warnings (signed + notarized) and without errors.
+2. **Capture works**: invoke the capture window, type a note, save it. The
+   note lands in the vault; no error states anywhere. This exercises the
+   bundled sidecar — the app ships its own node runtime and sidecar bundle,
+   so this must work with nothing else installed.
+3. **Ollama detected when running**: start Ollama (`ollama serve` or the
+   desktop app), open Settings — the Ollama provider must show as detected.
+   Ollama is optional: without it the app still works (this is why the cask
+   has no dependency on it).
+4. **`--` disables AI**: in Settings pick the `--` provider (AI off). Capture
+   still works; no AI calls, no errors.
+
+Any failure here blocks the release: fix, re-run `scripts/release.sh`, and
+re-check.
 
 ## Homebrew tap
 
@@ -166,13 +207,9 @@ build against non-default LLM endpoints:
 
 ## Known limitations
 
-- **The Node sidecar is NOT bundled into the .app.** The app spawns it via
-  `node` from the repo-relative `sidecar/` directory (a dev-time path compiled
-  into the binary — see `sidecar_dir()` in `src-tauri/src/lib.rs`). A packaged
-  app on another machine — or outside this checkout — will not find it and
-  runs in the degraded no-sidecar mode (notes work; agent/enrichment features
-  are unavailable). Bundling the sidecar as a proper Tauri sidecar binary is a
-  separate future task.
 - The dmg is built for the host architecture only (Apple Silicon on the
   maintainer's machine); no universal binary yet.
 - No CI: releases are cut manually from a maintainer's machine.
+
+(The Node sidecar IS bundled: the .app ships its own node runtime, the claude
+CLI, and the esbuild'd sidecar bundle — consumers need nothing installed.)
