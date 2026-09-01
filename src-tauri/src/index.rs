@@ -388,9 +388,8 @@ pub fn resolve_vault_dir(home: &Path) -> PathBuf {
     let legacy = home.join(LEGACY_VAULT_DIR_NAME);
     if legacy.is_dir() {
         eprintln!(
-            "[stash] using legacy vault dir {} (no {} config found)",
-            legacy.display(),
-            "~/.config/stash/config.json"
+            "[stash] using legacy vault dir {} (no ~/.config/stash/config.json config found)",
+            legacy.display()
         );
         return legacy;
     }

@@ -90,8 +90,8 @@ fn a_reader_sees_only_whole_versions_and_no_temp_is_left_behind() {
     let target = vault.join("note.md");
 
     // Big enough that a non-atomic write would be caught in the middle.
-    let old: Vec<u8> = std::iter::repeat(b'a').take(64 * 1024).collect();
-    let new: Vec<u8> = std::iter::repeat(b'b').take(64 * 1024 + 7).collect();
+    let old: Vec<u8> = std::iter::repeat_n(b'a', 64 * 1024).collect();
+    let new: Vec<u8> = std::iter::repeat_n(b'b', 64 * 1024 + 7).collect();
     fs::write(&target, &old).unwrap();
 
     let stop = Arc::new(AtomicBool::new(false));
