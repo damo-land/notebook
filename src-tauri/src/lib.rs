@@ -1273,6 +1273,18 @@ async fn ollama_status(sidecar: State<'_, SidecarState>) -> Result<serde_json::V
     await_sidecar_result(rx, OLLAMA_STATUS_TIMEOUT).await
 }
 
+/// The settings view's Start button: ask the sidecar to spawn `ollama serve`
+/// detached. Result is `{started: bool, error?: string}` — a missing binary
+/// is a normal `started: false` result, not an Err. The sidecar answers as
+/// soon as the process is spawned (or fails to), well inside this timeout.
+const OLLAMA_START_TIMEOUT: Duration = Duration::from_secs(10);
+
+#[tauri::command]
+async fn ollama_start(sidecar: State<'_, SidecarState>) -> Result<serde_json::Value, String> {
+    let rx = sidecar.0.call("ollamaStart", None)?;
+    await_sidecar_result(rx, OLLAMA_START_TIMEOUT).await
+}
+
 // --- Chat (T14) --------------------------------------------------------------
 //
 // One turn of the overlay's chat view. The answer streams back out of band as
@@ -1553,6 +1565,7 @@ pub fn run() {
             set_autostart,
             claude_auth_status,
             ollama_status,
+            ollama_start,
             vault_read_file,
             vault_write_file,
             vault_readdir,
