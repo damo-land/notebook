@@ -12,10 +12,15 @@
 //   section prefilled with the CONFIGURED path, and the AI section — all
 //   visible at once. Enter saves only what changed, Esc closes.
 //
-// Probes run ONCE per open of the AI section: claude_auth_status costs a real
-// model call (T2 audit), so a ref guards it against re-renders and
-// StrictMode's double effect; ollama_status rides the same guard. Both render
-// as "checking…" until they land.
+// Probes poll while the AI section is open (settings-overhaul T1):
+// claude_auth_status and ollama_status re-fire every 4s until each returns a
+// definitive result, then every 15s so external changes (daemon stopped,
+// token revoked) still surface. A rejected invoke means the SIDECAR is
+// unreachable — the sidecar boots asynchronously after app start — which is
+// NOT "unauthenticated"/"not running": it renders as "checking…" until the
+// first definitive result, and as "sidecar unreachable" if the sidecar drops
+// out later. The effect's cleanup clears every pending timer, so nothing
+// fires after the view unmounts.
 //
 // Save sequencing (T2 audit): set_vault_dir, set_llm_config and
 // set_autostart all read-modify-write config.json and must never run
@@ -57,11 +62,27 @@ import appIcon from "../../src-tauri/icons/128x128.png";
 /** Obsidian's vault registry, relative to home. */
 const OBSIDIAN_REGISTRY = "Library/Application Support/obsidian/obsidian.json";
 
-/** `claude_auth_status` result; null while the probe is in flight. */
+/** `claude_auth_status` result. */
 interface ClaudeStatus {
   authenticated: boolean;
   detail: string | null;
 }
+
+/**
+ * One provider's probe state. "pending" until the first definitive result
+ * (a resolved invoke) lands; a rejected invoke means the sidecar itself is
+ * unreachable, which stays "pending" before any definitive result (the
+ * sidecar is likely still booting) and becomes "unreachable" after one (the
+ * sidecar dropped out — we can no longer say anything about the provider).
+ */
+type ProbeState<T> =
+  | { kind: "pending" }
+  | { kind: "unreachable" }
+  | { kind: "done"; value: T };
+
+/** Probe cadence: fast until a definitive result, slow afterwards. */
+const FAST_POLL_MS = 4000;
+const SLOW_POLL_MS = 15000;
 
 interface SetupViewProps {
   /** First run: no vault configured yet, so Esc cannot cancel out. */
@@ -100,8 +121,10 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
   const [initialAutostart, setInitialAutostart] = useState<boolean | null>(null);
   const autostartDisabled = mode === "settings" && initialAutostart === null;
 
-  const [claudeStatus, setClaudeStatus] = useState<ClaudeStatus | null>(null);
-  const [ollamaProbe, setOllamaProbe] = useState<OllamaProbe | null>(null);
+  const [claudeProbe, setClaudeProbe] = useState<ProbeState<ClaudeStatus>>({ kind: "pending" });
+  const [ollamaState, setOllamaState] = useState<ProbeState<OllamaProbe>>({ kind: "pending" });
+  // The shape the settings-flow helpers take: null until a definitive probe.
+  const ollamaProbe = ollamaState.kind === "done" ? ollamaState.value : null;
   const [version, setVersion] = useState("");
 
   const [error, setError] = useState<string | null>(null);
@@ -162,37 +185,97 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
       .catch(() => setVersion(""));
   }, [firstRun]);
 
-  // Provider probes, ONCE per open of the AI section (wizard: when step 2
-  // appears; settings: on mount). claude_auth_status spends a real model
-  // call, so the ref guard keeps re-renders and StrictMode's doubled effect
-  // from ever firing it twice.
+  // Provider probes, POLLED while the AI section is visible (wizard: step 2;
+  // settings: whole open). Each provider loops independently: probe, wait,
+  // probe again — re-scheduled only after the previous invoke settles, so
+  // probes never overlap even when one hangs to its timeout. Fast cadence
+  // until the first definitive result (a resolved invoke — the sidecar boots
+  // asynchronously, so early invokes reject with "sidecar unreachable" and
+  // must not read as unauthenticated / not running), slow afterwards so
+  // external changes (daemon stopped, token revoked) still surface without
+  // hammering claude_auth_status, which spends a real model call. The first
+  // tick goes through setTimeout(0): StrictMode's doubled dev effect cleans
+  // up before the timer fires, so each probe still fires once per open.
+  // Cleanup clears every pending timer — nothing fires after unmount.
   const aiVisible = !firstRun || wizard.step === "ai";
-  const probedRef = useRef(false);
   useEffect(() => {
-    if (!aiVisible || probedRef.current) return;
-    probedRef.current = true;
-    void invoke<ClaudeStatus>("claude_auth_status")
-      .then(setClaudeStatus)
-      .catch((err) => setClaudeStatus({ authenticated: false, detail: String(err) }));
-    void invoke<OllamaProbe>("ollama_status")
-      .then(setOllamaProbe)
-      .catch(() => setOllamaProbe({ reachable: false, models: [] }));
-    // Settings only: seed the checkbox from the LIVE plugin state, not the
-    // stored config; until then it stays unchecked and disabled. A failed
-    // probe leaves initialAutostart null (box disabled, savePlan skips it)
-    // and surfaces on the error line. The wizard keeps its default-checked
-    // box instead — nothing is registered yet on first run.
-    if (!firstRun) {
-      void invoke<boolean>("get_autostart")
-        .then((enabled) => {
-          setAutostart(enabled);
-          setInitialAutostart(enabled);
-        })
-        .catch((err) => {
-          console.error("get_autostart failed:", err);
-          setError(`get_autostart failed: ${String(err)}`);
+    if (!aiVisible) return;
+    let cancelled = false;
+    const timers = new Set<ReturnType<typeof setTimeout>>();
+    const schedule = (fn: () => void, ms: number) => {
+      const t = setTimeout(() => {
+        timers.delete(t);
+        fn();
+      }, ms);
+      timers.add(t);
+    };
+
+    /** Loop one probe; it reports whether it got a definitive result. */
+    const loop = (probe: () => Promise<boolean>) => {
+      let definitive = false;
+      const tick = () => {
+        void probe().then((ok) => {
+          if (cancelled) return;
+          if (ok) definitive = true;
+          schedule(tick, definitive ? SLOW_POLL_MS : FAST_POLL_MS);
         });
-    }
+      };
+      schedule(tick, 0);
+    };
+
+    // A rejected invoke = sidecar unreachable: keep "pending" before any
+    // definitive result, flip to "unreachable" after one.
+    const sidecarDown = <T,>(prev: ProbeState<T>): ProbeState<T> =>
+      prev.kind === "pending" ? prev : { kind: "unreachable" };
+
+    loop(async () => {
+      try {
+        const status = await invoke<ClaudeStatus>("claude_auth_status");
+        if (!cancelled) setClaudeProbe({ kind: "done", value: status });
+        return true;
+      } catch {
+        if (!cancelled) setClaudeProbe(sidecarDown);
+        return false;
+      }
+    });
+    loop(async () => {
+      try {
+        const probe = await invoke<OllamaProbe>("ollama_status");
+        if (!cancelled) setOllamaState({ kind: "done", value: probe });
+        return true;
+      } catch {
+        if (!cancelled) setOllamaState(sidecarDown);
+        return false;
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      for (const t of timers) clearTimeout(t);
+    };
+  }, [aiVisible]);
+
+  // Settings only, ONCE per open: seed the checkbox from the LIVE plugin
+  // state, not the stored config; until then it stays unchecked and
+  // disabled. A failed probe leaves initialAutostart null (box disabled,
+  // savePlan skips it) and surfaces on the error line. The wizard keeps its
+  // default-checked box instead — nothing is registered yet on first run.
+  // Unlike the provider probes this must NOT poll: re-seeding would clobber
+  // a toggle the user already made, so the ref guard (re-renders and
+  // StrictMode's doubled effect) stays.
+  const autostartSeededRef = useRef(false);
+  useEffect(() => {
+    if (!aiVisible || firstRun || autostartSeededRef.current) return;
+    autostartSeededRef.current = true;
+    void invoke<boolean>("get_autostart")
+      .then((enabled) => {
+        setAutostart(enabled);
+        setInitialAutostart(enabled);
+      })
+      .catch((err) => {
+        console.error("get_autostart failed:", err);
+        setError(`get_autostart failed: ${String(err)}`);
+      });
   }, [aiVisible, firstRun]);
 
   // Advancing to the wizard's AI step swaps the field set; focus follows.
@@ -333,22 +416,30 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
     }
   };
 
+  // "not authenticated" / "not running" render ONLY after a completed probe
+  // that definitively said so. A sidecar that is down says exactly that —
+  // it claims nothing about authentication or the ollama daemon.
   const claudeLine =
-    claudeStatus === null ? (
+    claudeProbe.kind === "pending" ? (
       <span className="settings-note">checking…</span>
-    ) : claudeStatus.authenticated ? (
+    ) : claudeProbe.kind === "unreachable" ? (
+      <span className="field-parse field-parse-bad">sidecar unreachable</span>
+    ) : claudeProbe.value.authenticated ? (
       <span className="field-parse">authenticated</span>
     ) : (
       <span className="field-parse field-parse-bad">
-        not authenticated{claudeStatus.detail ? ` — ${claudeStatus.detail}` : ""}
+        not authenticated{claudeProbe.value.detail ? ` — ${claudeProbe.value.detail}` : ""}
       </span>
     );
   const ollamaLine =
-    ollamaProbe === null ? (
+    ollamaState.kind === "pending" ? (
       <span className="settings-note">checking…</span>
-    ) : ollamaProbe.reachable ? (
+    ) : ollamaState.kind === "unreachable" ? (
+      <span className="field-parse field-parse-bad">sidecar unreachable</span>
+    ) : ollamaState.value.reachable ? (
       <span className="field-parse">
-        running · {ollamaProbe.models.length} model{ollamaProbe.models.length === 1 ? "" : "s"}
+        running · {ollamaState.value.models.length} model
+        {ollamaState.value.models.length === 1 ? "" : "s"}
       </span>
     ) : (
       <span className="field-parse field-parse-bad">not running</span>
