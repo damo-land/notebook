@@ -37,8 +37,10 @@ import { getVaultDir } from "../lib/vault";
 import { homeDir, tauriVaultFs } from "../lib/vault-fs";
 import { useFocusOnOverlayShown } from "../lib/overlay";
 import {
+  CLAUDE_CREDS_HINT,
   PROVIDER_NONE_LABEL,
   WIZARD_AUTOSTART_DEFAULT,
+  aiStatusLine,
   escCloses,
   fieldOrder,
   initialLlmChoice,
@@ -49,6 +51,7 @@ import {
   providerSelectable,
   savePlan,
   selectedModel,
+  sidecarLiveness,
   withModel,
   withProvider,
   wizardConfirm,
@@ -153,6 +156,15 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
 
   const [claudeProbe, setClaudeProbe] = useState<ProbeState<ClaudeStatus>>({ kind: "pending" });
   const [ollamaState, setOllamaState] = useState<ProbeState<OllamaProbe>>({ kind: "pending" });
+  // Claude Code credentials on this machine (T5): null until the fast local
+  // claude_creds_present probe (a Rust command — no sidecar) resolves; the
+  // claude option is offered only on true. Polled with the others so an
+  // external `claude setup-token` unlocks the option without reopening.
+  const [claudeCreds, setClaudeCreds] = useState<boolean | null>(null);
+  // Consecutive rejected SIDECAR probe invokes with no definitive result yet:
+  // feeds sidecarLiveness, so a sidecar that never comes up degrades the
+  // status row to "sidecar down" — quietly, never a dialog.
+  const [sidecarFails, setSidecarFails] = useState(0);
   // The shape the settings-flow helpers take: null until a definitive probe.
   const ollamaProbe = ollamaState.kind === "done" ? ollamaState.value : null;
   // Start button (T2): busy from click until the daemon answers a re-probe
@@ -265,22 +277,47 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
     loop(async () => {
       try {
         const status = await invoke<ClaudeStatus>("claude_auth_status");
-        if (!cancelled) setClaudeProbe({ kind: "done", value: status });
+        if (!cancelled) {
+          setClaudeProbe({ kind: "done", value: status });
+          setSidecarFails(0);
+        }
         return true;
       } catch {
-        if (!cancelled) setClaudeProbe(sidecarDown);
+        if (!cancelled) {
+          setClaudeProbe(sidecarDown);
+          setSidecarFails((n) => n + 1);
+        }
         return false;
       }
     });
     loop(async () => {
       try {
         const probe = await invoke<OllamaProbe>("ollama_status");
-        if (!cancelled) setOllamaState({ kind: "done", value: probe });
+        if (!cancelled) {
+          setOllamaState({ kind: "done", value: probe });
+          setSidecarFails(0);
+        }
         return true;
       } catch {
-        if (!cancelled) setOllamaState(sidecarDown);
+        if (!cancelled) {
+          setOllamaState(sidecarDown);
+          setSidecarFails((n) => n + 1);
+        }
         return false;
       }
+    });
+    // Claude Code credentials (T5): a local Rust probe, not a sidecar call —
+    // it answers even with the sidecar dead, and a rejection (impossible in
+    // the packaged app) just reads as not detected. Polled on the same
+    // cadence so signing in externally unlocks the claude option in place.
+    loop(async () => {
+      try {
+        const present = await invoke<boolean>("claude_creds_present");
+        if (!cancelled) setClaudeCreds(present);
+      } catch {
+        if (!cancelled) setClaudeCreds(false);
+      }
+      return true;
     });
 
     return () => {
@@ -486,6 +523,12 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
     }
   };
 
+  // THE AI status row (T5): the one summary line — off gets the exact
+  // enable-hint copy, a live provider gets provider + model + the sidecar
+  // verdict folded from both probes. Every sidecar/provider failure lands
+  // here (and in the per-provider lines below), never in a dialog or toast.
+  const statusRow = aiStatusLine(llm, sidecarLiveness(claudeProbe.kind, ollamaState.kind, sidecarFails));
+
   // "not authenticated" / "not running" render ONLY after a completed probe
   // that definitively said so. A sidecar that is down says exactly that —
   // it claims nothing about authentication or the ollama daemon.
@@ -563,8 +606,19 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
               onChange={(e) => pickProvider(e.target.value as ProviderId)}
               aria-label="ai provider"
             >
-              <option value="claude">Claude</option>
-              <option value="ollama" disabled={!providerSelectable("ollama", ollamaProbe)}>
+              {/* Offered only with Claude Code credentials on the machine
+                  (T5) — without them the selector offers ollama and `--`,
+                  with the hint line below pointing at claude sign-in. */}
+              <option
+                value="claude"
+                disabled={!providerSelectable("claude", ollamaProbe, claudeCreds)}
+              >
+                Claude
+              </option>
+              <option
+                value="ollama"
+                disabled={!providerSelectable("ollama", ollamaProbe, claudeCreds)}
+              >
                 Ollama
               </option>
               {/* AI off. Always selectable — needs no daemon, no model. */}
@@ -597,13 +651,32 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
             )}
           </div>
           <div className="settings-status">
+            <div className="settings-status-row">{statusRow}</div>
+            {/* Claude gating hint (T5): the option above is disabled without
+                Claude Code credentials; this line says why and names the
+                sign-in command. Subsumes the T3 auth guidance below (same
+                command) — only one of the two renders. */}
+            {claudeCreds === false && (
+              <div className="settings-note">
+                {CLAUDE_CREDS_HINT} <code>{SETUP_TOKEN_CMD}</code>{" "}
+                <button
+                  type="button"
+                  className="settings-btn"
+                  onClick={() => void copySetupCommand()}
+                  aria-label="copy claude setup-token command"
+                >
+                  copy command
+                </button>
+              </div>
+            )}
             <div>claude — {claudeLine}</div>
             {/* Auth guidance (T3): ONLY when a completed probe definitively
                 said unauthenticated — never while pending or when the sidecar
                 is unreachable. The polling loop above flips the probe to
                 authenticated once the user signs in externally, and this
-                block disappears without reopening the view. */}
-            {claudeProbe.kind === "done" && !claudeProbe.value.authenticated && (
+                block disappears without reopening the view. Skipped when the
+                creds hint above already shows the same command. */}
+            {claudeCreds !== false && claudeProbe.kind === "done" && !claudeProbe.value.authenticated && (
               <div className="settings-note">
                 run <code>{SETUP_TOKEN_CMD}</code> in a terminal to sign in{" "}
                 <button

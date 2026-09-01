@@ -12,11 +12,14 @@ import assert from "node:assert";
 import { CLAUDE_MODELS, DEFAULT_CLAUDE_MODEL } from "../src/lib/llm-models";
 import {
   AI_OFF_NOTE,
+  AI_OFF_STATUS,
   OLLAMA_DOWN,
   OLLAMA_PULL_HINT,
   PROVIDER_NONE_LABEL,
+  SIDECAR_BOOT_FAILS,
   WIZARD_AUTOSTART_DEFAULT,
   aiDisabled,
+  aiStatusLine,
   canSaveLlm,
   escCloses,
   fieldOrder,
@@ -27,6 +30,7 @@ import {
   providerSelectable,
   savePlan,
   selectedModel,
+  sidecarLiveness,
   withModel,
   withProvider,
   wizardConfirm,
@@ -115,14 +119,54 @@ import {
   const down = modelListing("ollama", { reachable: false, models: [] });
   assert.deepStrictEqual([...down.options], []);
   assert.strictEqual(down.note, OLLAMA_DOWN);
-  assert.strictEqual(providerSelectable("ollama", { reachable: false, models: [] }), false);
+  assert.strictEqual(providerSelectable("ollama", { reachable: false, models: [] }, true), false);
 
   // Probe still in flight (null): not selectable yet, no false "not running".
-  assert.strictEqual(providerSelectable("ollama", null), false);
+  assert.strictEqual(providerSelectable("ollama", null, true), false);
   assert.strictEqual(modelListing("ollama", null).note, "checking…");
 
-  // Claude is always selectable — its status line reports auth separately.
-  assert.strictEqual(providerSelectable("claude", null), true);
+  // Claude is selectable exactly when Claude Code credentials were detected;
+  // an unresolved creds probe (null) counts as not detected.
+  assert.strictEqual(providerSelectable("claude", null, true), true);
+  assert.strictEqual(providerSelectable("claude", null, false), false);
+  assert.strictEqual(providerSelectable("claude", null, null), false);
+}
+
+// --- the ONE AI status row (T5): off copy, provider+model, sidecar verdict ---
+
+{
+  // Off: the exact enable-hint copy, regardless of sidecar state.
+  const off = withProvider(initialLlmChoice(null), "none");
+  assert.strictEqual(aiStatusLine(off, "up"), AI_OFF_STATUS);
+  assert.strictEqual(aiStatusLine(off, "down"), AI_OFF_STATUS);
+  assert.strictEqual(
+    AI_OFF_STATUS,
+    "AI off — pick Claude or Ollama to enable chat & enrichment"
+  );
+
+  // Claude/ollama: provider + model and whether the sidecar is up.
+  const claude = initialLlmChoice({ provider: "claude", model: "claude-sonnet-5" });
+  assert.strictEqual(aiStatusLine(claude, "up"), "Claude · claude-sonnet-5 — sidecar up");
+  assert.strictEqual(aiStatusLine(claude, "down"), "Claude · claude-sonnet-5 — sidecar down");
+  assert.strictEqual(
+    aiStatusLine(claude, "checking"),
+    "Claude · claude-sonnet-5 — sidecar checking…"
+  );
+  const ollama = initialLlmChoice({ provider: "ollama", model: "qwen3:8b" });
+  assert.strictEqual(aiStatusLine(ollama, "up"), "Ollama · qwen3:8b — sidecar up");
+  const unpicked = withProvider(initialLlmChoice(null), "ollama");
+  assert.strictEqual(aiStatusLine(unpicked, "up"), "Ollama · no model picked — sidecar up");
+
+  // Sidecar verdict: any resolved probe proves up; "unreachable" (rejection
+  // after a definitive result) proves it dropped out; all-pending is still
+  // booting until SIDECAR_BOOT_FAILS consecutive rejections call it down —
+  // a dead sidecar at app launch degrades to "down" with no dialog anywhere.
+  assert.strictEqual(sidecarLiveness("done", "pending", 0), "up");
+  assert.strictEqual(sidecarLiveness("pending", "done", 0), "up");
+  assert.strictEqual(sidecarLiveness("unreachable", "pending", 0), "down");
+  assert.strictEqual(sidecarLiveness("pending", "pending", 0), "checking");
+  assert.strictEqual(sidecarLiveness("pending", "pending", SIDECAR_BOOT_FAILS - 1), "checking");
+  assert.strictEqual(sidecarLiveness("pending", "pending", SIDECAR_BOOT_FAILS), "down");
 }
 
 // --- per-provider model memory: toggling back keeps the earlier pick ---------
@@ -245,8 +289,9 @@ import {
   assert.strictEqual(aiDisabled("ollama"), false);
   assert.strictEqual(aiDisabled("gpt-things"), false); // unknown ≠ off
 
-  // Always selectable — off needs no daemon; no model dropdown, a note.
-  assert.strictEqual(providerSelectable("none", null), true);
+  // Always selectable — off needs no daemon, no credentials; no model
+  // dropdown, a note.
+  assert.strictEqual(providerSelectable("none", null, null), true);
   const off = modelListing("none", null);
   assert.deepStrictEqual([...off.options], []);
   assert.strictEqual(off.note, AI_OFF_NOTE);
