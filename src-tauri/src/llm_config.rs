@@ -145,14 +145,21 @@ pub fn update_config_json(
 // errors, logs at error level, or touches the UI.
 // ---------------------------------------------------------------------------
 
-/// True when the config file already carries an `llm` key (any value):
-/// detection must then not run at all.
+/// True when detection must not run at all: the config file already carries
+/// an `llm` key (any value) — or it EXISTS but fails to parse. The
+/// unparseable case is a clobber guard (T7): proceeding would end in
+/// [`update_config_json`], which treats an unparseable file as `{}` and
+/// would rewrite it with only `{"llm":…}`, silently dropping the user's
+/// `vaultDir`/`autostart`. A missing file still detects (first run proper);
+/// a file that parses without an `llm` key still detects.
 fn config_has_llm_key(home: &Path) -> bool {
-    std::fs::read_to_string(config_path(home))
-        .ok()
-        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
-        .map(|root| root.get("llm").is_some())
-        .unwrap_or(false)
+    let Ok(raw) = std::fs::read_to_string(config_path(home)) else {
+        return false; // no file yet: genuine first run, detect
+    };
+    match serde_json::from_str::<serde_json::Value>(&raw) {
+        Ok(root) => root.get("llm").is_some(),
+        Err(_) => true, // existing but unparseable: hands off, no probes, no write
+    }
 }
 
 /// Claude Code credentials present on this machine?
@@ -530,6 +537,32 @@ mod tests {
                 std::fs::read_to_string(config_path(&home)).unwrap(),
                 persisted,
                 "existing config must not be rewritten"
+            );
+            let _ = std::fs::remove_dir_all(&home);
+        }
+    }
+
+    /// Clobber guard (T7): an EXISTING config file that fails to parse must
+    /// make detection a full no-op — the probes must not run (they panic
+    /// here), nothing is written, the file bytes stay exactly as they were.
+    /// Detecting over an unparseable file would funnel into
+    /// update_config_json, which restarts from `{}` and would silently drop
+    /// the user's `vaultDir`/`autostart`.
+    #[test]
+    fn detect_is_noop_when_config_unparseable() {
+        for malformed in [r#"{"vaultDir":"#, "{not json"] {
+            let home = scratch_home("detect-unparseable");
+            write_config(&home, malformed);
+            let chosen = detect_and_persist_provider(
+                &home,
+                || panic!("claude probe must not run on unparseable config"),
+                || panic!("ollama probe must not run on unparseable config"),
+            );
+            assert_eq!(chosen, None);
+            assert_eq!(
+                std::fs::read_to_string(config_path(&home)).unwrap(),
+                malformed,
+                "unparseable config must not be rewritten"
             );
             let _ = std::fs::remove_dir_all(&home);
         }
