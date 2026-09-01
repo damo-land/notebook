@@ -29,5 +29,6 @@ scripts/scratch/
 *.sln
 *.sw?
 
-# Screenshot harness output (scripts/shoot.sh)
-screenshots/
+# Screenshot harness output (scripts/shoot.sh) — root dir only: committed
+# screenshots live under docs/screenshots/.
+/screenshots/
