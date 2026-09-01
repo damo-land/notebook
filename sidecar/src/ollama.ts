@@ -28,6 +28,8 @@
 //
 // probeOllama serves the settings UI: "is the daemon up, and which models does
 // it hold". Node 22's native fetch throughout — no HTTP dependency.
+import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import type { ChatHistoryTurn, ChatTurnParams, ChatTurnResult } from "./chat.ts";
 import type { RunPromptOptions } from "./llm.ts";
 import { readVaultNote, searchVault } from "./vault.ts";
@@ -581,4 +583,65 @@ export async function probeOllama(
   } catch {
     return { reachable: false, models: [] };
   }
+}
+
+// --- startOllama (settings-overhaul T2) --------------------------------------
+
+/**
+ * Where a Homebrew-installed ollama lives on macOS (Apple Silicon, then
+ * Intel). Checked explicitly because the sidecar's inherited environment —
+ * launched from a .app bundle — may not carry the user's shell PATH.
+ */
+const OLLAMA_BINARY_PATHS = ["/opt/homebrew/bin/ollama", "/usr/local/bin/ollama"];
+
+/** `ollamaStart` result. `error` is set exactly when `started` is false. */
+export interface OllamaStartResult {
+  started: boolean;
+  error?: string;
+}
+
+/**
+ * The Start button (settings UI): spawn `ollama serve` as a detached
+ * background process. Fire-and-forget — stdio ignored, unref'd, never
+ * awaited — so it cannot block the sidecar event loop; the T1 status poll
+ * is what observes whether the daemon actually came up.
+ *
+ * Binary discovery does NOT trust the inherited PATH: the known Homebrew
+ * locations are fs-checked first, bare `ollama` (PATH lookup) is only the
+ * last resort. Typed result, never a throw: a missing binary is the
+ * expected "ollama not installed" state the settings UI renders inline.
+ *
+ * Note the resolved promise means "the process was spawned", not "the
+ * daemon is serving" — a port conflict or crash after spawn is the poll
+ * loop's business, not ours.
+ */
+export function startOllama(): Promise<OllamaStartResult> {
+  const found = OLLAMA_BINARY_PATHS.find((p) => existsSync(p));
+  const bin = found ?? "ollama";
+  return new Promise((resolve) => {
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(bin, ["serve"], { detached: true, stdio: "ignore" });
+    } catch (err) {
+      resolve({
+        started: false,
+        error: `failed to start ollama: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      return;
+    }
+    // Exactly one of these fires; resolve() is idempotent so no guard needed.
+    child.once("spawn", () => {
+      child.unref();
+      resolve({ started: true });
+    });
+    child.once("error", (err: NodeJS.ErrnoException) => {
+      resolve({
+        started: false,
+        error:
+          err.code === "ENOENT"
+            ? "ollama not installed"
+            : `failed to start ollama: ${err.message}`,
+      });
+    });
+  });
 }
