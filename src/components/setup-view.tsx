@@ -84,6 +84,29 @@ type ProbeState<T> =
 const FAST_POLL_MS = 4000;
 const SLOW_POLL_MS = 15000;
 
+/** The command the auth guidance names and copies (settings-overhaul T3). */
+const SETUP_TOKEN_CMD = "claude setup-token";
+
+/**
+ * Copy the setup command. navigator.clipboard first; a hidden textarea +
+ * execCommand("copy") as the fallback for webviews where the async clipboard
+ * API is unavailable — no Tauri clipboard plugin dependency needed.
+ */
+async function copySetupCommand(): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(SETUP_TOKEN_CMD);
+  } catch {
+    const ta = document.createElement("textarea");
+    ta.value = SETUP_TOKEN_CMD;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    ta.remove();
+  }
+}
+
 interface SetupViewProps {
   /** First run: no vault configured yet, so Esc cannot cancel out. */
   firstRun: boolean;
@@ -513,6 +536,24 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
           </div>
           <div className="settings-status">
             <div>claude — {claudeLine}</div>
+            {/* Auth guidance (T3): ONLY when a completed probe definitively
+                said unauthenticated — never while pending or when the sidecar
+                is unreachable. The polling loop above flips the probe to
+                authenticated once the user signs in externally, and this
+                block disappears without reopening the view. */}
+            {claudeProbe.kind === "done" && !claudeProbe.value.authenticated && (
+              <div className="settings-note">
+                run <code>{SETUP_TOKEN_CMD}</code> in a terminal to sign in{" "}
+                <button
+                  type="button"
+                  className="settings-select"
+                  onClick={() => void copySetupCommand()}
+                  aria-label="copy claude setup-token command"
+                >
+                  copy command
+                </button>
+              </div>
+            )}
             <div>ollama — {ollamaLine}</div>
           </div>
           <div className="field-editor">
