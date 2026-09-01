@@ -326,6 +326,16 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
     };
   }, [aiVisible]);
 
+  // Wizard creds gate (T7): a DEFINITIVE "no Claude Code credentials" demotes
+  // a claude selection to "none" so the select shows what a confirm would
+  // actually save (wizardConfirm gates the save regardless, treating an
+  // unresolved probe as absent too). Wizard only — settings mode must keep
+  // showing the persisted choice; its dropdown already disables claude.
+  useEffect(() => {
+    if (!firstRun || claudeCreds !== false) return;
+    setLlm((cur) => (cur.provider === "claude" ? withProvider(cur, "none") : cur));
+  }, [firstRun, claudeCreds]);
+
   // Settings only, ONCE per open: seed the checkbox from the LIVE plugin
   // state, not the stored config; until then it stays unchecked and
   // disabled. A failed probe leaves initialAutostart null (box disabled,
@@ -424,6 +434,7 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
           vaultPath: path,
           llm,
           autostart,
+          claudeCreds,
         });
         if (actions.some((a) => a.cmd === "set_llm_config") && !canSaveLlm(llm)) {
           setError("pick a model first");
