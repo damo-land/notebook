@@ -11,9 +11,12 @@
 import assert from "node:assert";
 import { CLAUDE_MODELS, DEFAULT_CLAUDE_MODEL } from "../src/lib/llm-models";
 import {
+  AI_OFF_NOTE,
   OLLAMA_DOWN,
   OLLAMA_PULL_HINT,
+  PROVIDER_NONE_LABEL,
   WIZARD_AUTOSTART_DEFAULT,
+  aiDisabled,
   canSaveLlm,
   escCloses,
   fieldOrder,
@@ -226,6 +229,62 @@ import {
   );
   assert.deepStrictEqual(
     savePlan({ ...initial, initialAutostart: null, vaultPath: "/v/old", llm: llmUnchanged, autostart: true }),
+    []
+  );
+}
+
+// --- provider "none" (the `--` off switch) ------------------------------------
+
+{
+  assert.strictEqual(PROVIDER_NONE_LABEL, "--");
+
+  // The gating predicate chat/enrichment dispatch checks: ONLY "none" is off.
+  // Mirrors llm_disabled in src-tauri/src/llm_config.rs.
+  assert.strictEqual(aiDisabled("none"), true);
+  assert.strictEqual(aiDisabled("claude"), false);
+  assert.strictEqual(aiDisabled("ollama"), false);
+  assert.strictEqual(aiDisabled("gpt-things"), false); // unknown ≠ off
+
+  // Always selectable — off needs no daemon; no model dropdown, a note.
+  assert.strictEqual(providerSelectable("none", null), true);
+  const off = modelListing("none", null);
+  assert.deepStrictEqual([...off.options], []);
+  assert.strictEqual(off.note, AI_OFF_NOTE);
+
+  // Choosing `--` saves {provider: "none"} with no model, and is saveable
+  // despite the empty model.
+  let c = initialLlmChoice({ provider: "claude", model: "claude-sonnet-5" });
+  c = withProvider(c, "none");
+  assert.strictEqual(selectedModel(c), "");
+  assert.strictEqual(canSaveLlm(c), true);
+  assert.strictEqual(withModel(c, "x"), c); // no live model slot under none
+  assert.deepStrictEqual(
+    savePlan({
+      initialVaultPath: "/v/old",
+      initialLlm: { provider: "claude", model: "claude-sonnet-5" },
+      initialAutostart: false,
+      vaultPath: "/v/old",
+      llm: c,
+      autostart: false,
+    }),
+    [{ cmd: "set_llm_config", provider: "none", model: "" }]
+  );
+
+  // Toggling back on: the earlier claude pick survived the off switch.
+  assert.strictEqual(selectedModel(withProvider(c, "claude")), "claude-sonnet-5");
+
+  // A saved "none" config loads as none; nothing further to save.
+  const saved = initialLlmChoice({ provider: "none", model: "" });
+  assert.strictEqual(saved.provider, "none");
+  assert.deepStrictEqual(
+    savePlan({
+      initialVaultPath: "/v/old",
+      initialLlm: { provider: "none", model: "" },
+      initialAutostart: false,
+      vaultPath: "/v/old",
+      llm: saved,
+      autostart: false,
+    }),
     []
   );
 }

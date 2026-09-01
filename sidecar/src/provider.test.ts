@@ -13,6 +13,7 @@ import {
   probeOllama,
 } from "./ollama.ts";
 import {
+  AI_DISABLED_MESSAGE,
   coerceLlmConfig,
   DEFAULT_LLM_CONFIG,
   providerChatTurn,
@@ -45,6 +46,24 @@ test("a well-formed llm object passes through", () => {
 
 test("an unknown provider falls back to claude", () => {
   assert.deepEqual(coerceLlmConfig({ provider: "gpt-things" }), DEFAULT_LLM_CONFIG);
+});
+
+test("provider none (AI off) is accepted, with an empty model", () => {
+  assert.deepEqual(coerceLlmConfig({ provider: "none" }), { provider: "none", model: "" });
+  // A stray model string under none is ignored — nothing runs it anyway.
+  assert.deepEqual(coerceLlmConfig({ provider: "none", model: "claude-opus-5" }), {
+    provider: "none",
+    model: "",
+  });
+});
+
+test("provider none never reaches an LLM: both seams throw the typed message", async () => {
+  const config = { provider: "none" as const, model: "" };
+  await assert.rejects(() => providerRunPrompt(config)("hello"), new Error(AI_DISABLED_MESSAGE));
+  await assert.rejects(
+    () => providerChatTurn(config, { vaultDir: "/tmp", text: "hello" }),
+    new Error(AI_DISABLED_MESSAGE),
+  );
 });
 
 test("a blank model defaults per provider (claude default; ollama empty)", () => {

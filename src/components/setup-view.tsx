@@ -37,6 +37,7 @@ import { getVaultDir } from "../lib/vault";
 import { homeDir, tauriVaultFs } from "../lib/vault-fs";
 import { useFocusOnOverlayShown } from "../lib/overlay";
 import {
+  PROVIDER_NONE_LABEL,
   WIZARD_AUTOSTART_DEFAULT,
   escCloses,
   fieldOrder,
@@ -406,7 +407,8 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
       });
       // Guard only a save that would actually write the llm config: a
       // vault-only change must not be held hostage by an unpicked model.
-      if (plan.some((a) => a.cmd === "set_llm_config" && a.model === "")) {
+      // Provider "none" saves with no model by design (AI off).
+      if (plan.some((a) => a.cmd === "set_llm_config" && a.provider !== "none" && a.model === "")) {
         setError("pick a model first");
         return;
       }
@@ -565,6 +567,8 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
               <option value="ollama" disabled={!providerSelectable("ollama", ollamaProbe)}>
                 Ollama
               </option>
+              {/* AI off. Always selectable — needs no daemon, no model. */}
+              <option value="none">{PROVIDER_NONE_LABEL}</option>
             </select>
             {listing.options.length > 0 ? (
               <select
@@ -584,8 +588,11 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
               <span className="settings-note">
                 {/* Presentation-only alignment (T4): the dropdown note and
                     the ollama status line must not disagree — a sidecar
-                    that dropped out says so here too, not "checking…". */}
-                {ollamaState.kind === "unreachable" ? "sidecar unreachable" : listing.note}
+                    that dropped out says so here too, not "checking…".
+                    Provider "none" keeps its own note: off needs no sidecar. */}
+                {llm.provider === "ollama" && ollamaState.kind === "unreachable"
+                  ? "sidecar unreachable"
+                  : listing.note}
               </span>
             )}
           </div>

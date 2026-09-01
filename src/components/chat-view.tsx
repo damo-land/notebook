@@ -29,8 +29,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { appendDelta, finishTurn, type ChatTurn } from "../lib/chat-transcript";
 import { dismissOverlay, useFocusOnOverlayShown } from "../lib/overlay";
+import { aiDisabled } from "../lib/settings-flow";
 
 export type { ChatTurn };
+
+/** What the view shows when the provider is "none" (`--` in Settings): AI is
+ *  an explicit off switch, so chat is disabled and says where to turn it on. */
+const AI_OFF_CHAT = "AI is off — choose a provider in Settings to chat";
 
 /**
  * Stable prefix of the sidecar's NotAuthenticatedError message
@@ -96,6 +101,24 @@ interface ChatViewProps {
 
 export function ChatView({ turns, setTurns, session, setSession, onClose }: ChatViewProps) {
   const [draft, setDraft] = useState("");
+
+  // Provider "none" = AI off: the input is disabled and NO chat_send is ever
+  // invoked, so nothing reaches the sidecar (chat_send refuses too — this
+  // gate is the UX, that one is the backstop). Seeded per mount from
+  // get_llm_config (a config read, works even while the sidecar boots);
+  // false until known so a normal setup never flashes as disabled.
+  const [aiOff, setAiOff] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    void invoke<{ provider: string }>("get_llm_config")
+      .then((cfg) => {
+        if (!cancelled) setAiOff(aiDisabled(cfg.provider));
+      })
+      .catch((err) => console.error("get_llm_config failed:", err));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -169,7 +192,7 @@ export function ChatView({ turns, setTurns, session, setSession, onClose }: Chat
     if (event.key === "Enter") {
       event.preventDefault();
       const text = draft.trim();
-      if (text === "" || busy) return; // no empty sends, no overlapping turns
+      if (text === "" || busy || aiOff) return; // no empty sends, no overlapping turns, no sends while AI is off
       setDraft("");
       void send(text);
       return;
@@ -196,7 +219,7 @@ export function ChatView({ turns, setTurns, session, setSession, onClose }: Chat
     <div className="chat-view">
       <div className="chat-transcript" role="log" aria-label="chat transcript">
         {turns.length === 0 ? (
-          <div className="tasks-empty">ask about your notes</div>
+          <div className="tasks-empty">{aiOff ? AI_OFF_CHAT : "ask about your notes"}</div>
         ) : (
           turns.map((turn, i) => (
             <div key={i} className={`chat-turn chat-turn-${turn.role}`}>
@@ -216,7 +239,12 @@ export function ChatView({ turns, setTurns, session, setSession, onClose }: Chat
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         onKeyDown={onKeyDown}
-        placeholder={busy ? "Answering…" : "Ask your notes…"}
+        placeholder={aiOff ? AI_OFF_CHAT : busy ? "Answering…" : "Ask your notes…"}
+        // Disabled state, via readOnly rather than `disabled`: a disabled
+        // input can't hold focus or receive keys, which would break Esc
+        // (leave chat) and Ctrl+W. Typing is inert; Enter is gated above.
+        readOnly={aiOff}
+        aria-disabled={aiOff}
         autoFocus
         spellCheck={false}
         aria-label="chat message"

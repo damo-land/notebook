@@ -15,7 +15,15 @@ import { chatTurn, type ChatTurnParams, type ChatTurnResult } from "./chat.ts";
 import { runPrompt, type RunPromptOptions } from "./llm.ts";
 import { ollamaChat, ollamaPrompt } from "./ollama.ts";
 
-export type LlmProviderId = "claude" | "ollama";
+export type LlmProviderId = "claude" | "ollama" | "none";
+
+/**
+ * Provider "none" = AI switched off in Settings (UI label `--`). The Rust
+ * side gates every call before it reaches the sidecar, so this message is
+ * defense in depth: if a request slips through anyway, it fails typed and
+ * loud instead of silently spending a model call.
+ */
+export const AI_DISABLED_MESSAGE = "AI is disabled — choose a provider in Settings";
 
 export interface LlmConfig {
   provider: LlmProviderId;
@@ -42,7 +50,10 @@ export const DEFAULT_LLM_CONFIG: LlmConfig = {
  */
 export function coerceLlmConfig(value: unknown): LlmConfig {
   const v = value as { provider?: unknown; model?: unknown } | null | undefined;
-  const provider: LlmProviderId = v?.provider === "ollama" ? "ollama" : "claude";
+  const provider: LlmProviderId =
+    v?.provider === "ollama" ? "ollama" : v?.provider === "none" ? "none" : "claude";
+  // "none" runs nothing, so it has no model — a stray one is dropped.
+  if (provider === "none") return { provider, model: "" };
   const model =
     typeof v?.model === "string" && v.model.trim() !== ""
       ? v.model.trim()
@@ -85,6 +96,9 @@ export function resolveClaudeModel(
 export function providerRunPrompt(
   config: LlmConfig,
 ): (text: string, opts?: RunPromptOptions) => Promise<string> {
+  if (config.provider === "none") {
+    return () => Promise.reject(new Error(AI_DISABLED_MESSAGE));
+  }
   if (config.provider === "ollama") {
     // Same shape as the claude arm: an explicit per-call model wins, else the
     // configured one. (No STASH_MODEL here — that env var names Claude models.)
@@ -107,6 +121,7 @@ export async function providerChatTurn(
   params: ChatTurnParams,
   hooks: { onText?(delta: string): void } = {},
 ): Promise<ChatTurnResult> {
+  if (config.provider === "none") throw new Error(AI_DISABLED_MESSAGE);
   // Ollama gets the configured model verbatim (a blank one is its typed
   // "pick a model in Settings" error, not a default).
   if (config.provider === "ollama") return ollamaChat(config.model, params, hooks);
