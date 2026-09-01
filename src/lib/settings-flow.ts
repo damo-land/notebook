@@ -21,8 +21,22 @@ import { CLAUDE_MODELS, DEFAULT_CLAUDE_MODEL } from "./llm-models";
 
 export type SettingsMode = "wizard" | "settings";
 export type WizardStep = "vault" | "ai";
-export type ProviderId = "claude" | "ollama";
+export type ProviderId = "claude" | "ollama" | "none";
 export type SettingsField = "vault" | "provider" | "model" | "autostart";
+
+/** What the provider dropdown shows for "none": the AI off switch. */
+export const PROVIDER_NONE_LABEL = "--";
+
+/** Note rendered where the model dropdown would be under provider "none" —
+ *  off has no model to pick. */
+export const AI_OFF_NOTE = "AI off";
+
+/** THE chat/enrichment gating predicate for provider "none" (mirrors
+ *  llm_disabled in src-tauri/src/llm_config.rs): true = AI is off, no LLM
+ *  call may be made and the chat view renders its disabled state. */
+export function aiDisabled(provider: string): boolean {
+  return provider === "none";
+}
 
 /** The wizard's "Launch at login" checkbox starts CHECKED: the pure
  *  Enter-Enter path on a fresh machine enables autostart. */
@@ -63,11 +77,15 @@ export function initialLlmChoice(saved?: { provider: string; model: string } | n
   if (saved.provider === "ollama") {
     return { ...choice, provider: "ollama", ollamaModel: saved.model };
   }
+  // "none" keeps the default claude slot, so switching AI back on lands on
+  // a coherent model instead of an empty pick.
+  if (saved.provider === "none") return { ...choice, provider: "none" };
   return { ...choice, claudeModel: saved.model || DEFAULT_CLAUDE_MODEL };
 }
 
-/** The live provider's model — what a save would write. */
+/** The live provider's model — what a save would write. "none" has none. */
 export function selectedModel(choice: LlmChoice): string {
+  if (choice.provider === "none") return "";
   return choice.provider === "ollama" ? choice.ollamaModel : choice.claudeModel;
 }
 
@@ -75,16 +93,19 @@ export function withProvider(choice: LlmChoice, provider: ProviderId): LlmChoice
   return { ...choice, provider };
 }
 
-/** Set the LIVE provider's model; the other provider's slot is untouched. */
+/** Set the LIVE provider's model; the other provider's slot is untouched.
+ *  Under "none" there is no live slot — the choice is unchanged. */
 export function withModel(choice: LlmChoice, model: string): LlmChoice {
+  if (choice.provider === "none") return choice;
   return choice.provider === "ollama"
     ? { ...choice, ollamaModel: model }
     : { ...choice, claudeModel: model };
 }
 
-/** Ollama with no model picked has nothing coherent to save. */
+/** Ollama with no model picked has nothing coherent to save; "none" needs no
+ *  model — off is always saveable. */
 export function canSaveLlm(choice: LlmChoice): boolean {
-  return selectedModel(choice) !== "";
+  return choice.provider === "none" || selectedModel(choice) !== "";
 }
 
 // --- model list per provider --------------------------------------------------
@@ -97,8 +118,10 @@ export interface ModelListing {
 }
 
 /** Which models a provider offers: claude → the curated list; ollama → the
- *  live probe result (down → OLLAMA_DOWN, up-but-empty → the pull hint). */
+ *  live probe result (down → OLLAMA_DOWN, up-but-empty → the pull hint);
+ *  none → nothing to pick, the model dropdown is replaced by the off note. */
 export function modelListing(provider: ProviderId, probe: OllamaProbe | null): ModelListing {
+  if (provider === "none") return { options: [], note: AI_OFF_NOTE };
   if (provider === "claude") return { options: CLAUDE_MODELS, note: null };
   if (probe === null) return { options: [], note: OLLAMA_CHECKING };
   if (!probe.reachable) return { options: [], note: OLLAMA_DOWN };
@@ -110,7 +133,7 @@ export function modelListing(provider: ProviderId, probe: OllamaProbe | null): M
  *  daemon is up; claude is always selectable (auth is a status line, not a
  *  gate — an unauthenticated pick just fails at chat time with its message). */
 export function providerSelectable(provider: ProviderId, probe: OllamaProbe | null): boolean {
-  return provider === "claude" || probe?.reachable === true;
+  return provider !== "ollama" || probe?.reachable === true;
 }
 
 // --- field order: what Tab / arrows cycle through -----------------------------
