@@ -15,10 +15,27 @@ node --import tsx src/main.ts   (cwd: sidecar/)
 
 The child handle lives in Tauri managed state and is killed on `RunEvent::Exit`
 (app quit). No restart logic in v1. If the spawn fails, the app keeps running
-without agent features. Dev wiring: the sidecar directory is resolved relative
-to `CARGO_MANIFEST_DIR` (i.e. the repo checkout) and `node` must be on the
-app's PATH — fine when launched via `npm run tauri dev`; a bundled-app story
-comes later.
+without agent features — and the reason is remembered, so every sidecar call
+fails with it and the settings view shows it instead of probing forever.
+
+### Where it runs from, dev vs bundled
+
+`sidecar_dir()` prefers the copy bundled into the app
+(`Contents/Resources/sidecar-dist`) and falls back to the repo's `./sidecar`.
+
+- **Bundled**: `scripts/stage-sidecar.sh` stages source + `npm ci --omit=dev`
+  into `src-tauri/sidecar-dist`, which `tauri.conf.json` declares under
+  `bundle.resources`. Tauri's `beforeBuildCommand` runs it, so
+  `npm run tauri build` always ships a fresh copy. No bundler: the staged tree
+  runs exactly the way dev does, so there is only one runtime to reason about.
+- **Dev**: the repo checkout, resolved relative to `CARGO_MANIFEST_DIR`, so
+  edits are live under `npm run tauri dev`.
+
+`node` is **not** bundled; it is a prerequisite (the Homebrew cask declares
+`depends_on formula: "node"`). It is discovered by explicit path —
+`/opt/homebrew/bin/node`, `/usr/local/bin/node`, then a `PATH` lookup — because
+a GUI app inherits `PATH=/usr/bin:/bin:/usr/sbin:/sbin`, not the user's shell
+PATH. A bare `node` was ENOENT in every installed build.
 
 Run `npm run sidecar:install` (from the repo root) once before first launch.
 

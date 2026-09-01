@@ -1060,9 +1060,23 @@ struct Sidecar {
     /// Request id -> where its response line goes. Filled by `call`, drained
     /// by the stdout reader thread.
     pending: Mutex<HashMap<u64, mpsc::Sender<String>>>,
+    /// Why the sidecar isn't running, when it failed to start. Every `call`
+    /// then fails with THIS instead of a bare "sidecar not running", so the
+    /// settings view can show the actual reason (a missing node, say) rather
+    /// than leaving the provider probes on "checking…".
+    start_error: Mutex<Option<String>>,
 }
 
 impl Sidecar {
+    /// The error a call fails with while no process is running.
+    fn not_running(&self) -> String {
+        match self.start_error.lock() {
+            Ok(err) => err.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+        .unwrap_or_else(|| "sidecar not running".to_string())
+    }
+
     /// Writes one request line and returns the receiver for its response.
     /// The process lock is released before returning, so the caller can wait
     /// as long as it likes without blocking other callers.
@@ -1072,7 +1086,7 @@ impl Sidecar {
         params: Option<serde_json::Value>,
     ) -> Result<mpsc::Receiver<String>, String> {
         let mut guard = self.proc.lock().map_err(|_| "sidecar state poisoned")?;
-        let proc = guard.as_mut().ok_or("sidecar not running")?;
+        let proc = guard.as_mut().ok_or_else(|| self.not_running())?;
         proc.next_id += 1;
         let id = proc.next_id;
 
@@ -1106,15 +1120,55 @@ impl Sidecar {
 #[derive(Default)]
 struct SidecarState(Arc<Sidecar>);
 
-/// Dev wiring: the sidecar lives next to src-tauri in the repo.
-fn sidecar_dir() -> std::path::PathBuf {
+/// The directory the sidecar runs from.
+///
+/// Release: the copy bundled as an app resource by `scripts/stage-sidecar.sh`
+/// (declared under `bundle.resources` in tauri.conf.json). Dev: the repo's
+/// `./sidecar`, so edits are live.
+///
+/// The bundled copy is checked FIRST and by existence, not by
+/// `cfg!(debug_assertions)`: `CARGO_MANIFEST_DIR` is baked in at compile time,
+/// so an installed app used to point at whichever checkout happened to build
+/// it — a path that need not exist on the machine running the app. Nothing
+/// was bundled either, so an installed app had no sidecar at all and every
+/// provider probe in the settings view went unanswered.
+fn sidecar_dir(app: &AppHandle) -> std::path::PathBuf {
+    if let Ok(resources) = app.path().resource_dir() {
+        let bundled = resources.join("sidecar-dist");
+        if bundled.join("src/main.ts").is_file() {
+            return bundled;
+        }
+    }
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../sidecar")
 }
 
-fn spawn_sidecar() -> Result<(Child, ChildStdin, ChildStdout), String> {
-    let mut cmd = Command::new("node");
+/// Where a Homebrew-installed node lives on macOS (Apple Silicon, then Intel),
+/// then the macOS installer's location.
+///
+/// Checked explicitly because a GUI app launched from a .app bundle inherits
+/// `PATH=/usr/bin:/bin:/usr/sbin:/sbin`, not the user's shell PATH — so a bare
+/// `node` is ENOENT in an installed build ("spawn sidecar: No such file or
+/// directory") even though the same command works from a terminal, and every
+/// provider probe in the settings view then has no sidecar to answer it. Same
+/// rule, same reason as the ollama discovery in sidecar/src/ollama.ts.
+const NODE_BINARY_PATHS: [&str; 2] = ["/opt/homebrew/bin/node", "/usr/local/bin/node"];
+
+/// The node to run the sidecar with: the first known location that exists,
+/// else bare `node` (PATH lookup) as the last resort.
+fn node_binary() -> &'static str {
+    NODE_BINARY_PATHS
+        .iter()
+        .copied()
+        .find(|p| Path::new(p).is_file())
+        .unwrap_or("node")
+}
+
+fn spawn_sidecar(app: &AppHandle) -> Result<(Child, ChildStdin, ChildStdout), String> {
+    let node = node_binary();
+    let dir = sidecar_dir(app);
+    let mut cmd = Command::new(node);
     cmd.args(["--import", "tsx", "src/main.ts"])
-        .current_dir(sidecar_dir())
+        .current_dir(&dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
@@ -1122,7 +1176,17 @@ fn spawn_sidecar() -> Result<(Child, ChildStdin, ChildStdout), String> {
     // environment can never reach the SDK (billing stays on subscription).
     cmd.env_remove("ANTHROPIC_API_KEY");
 
-    let mut child = cmd.spawn().map_err(|e| format!("spawn sidecar: {e}"))?;
+    // Names the node AND the directory: this string is what the settings view
+    // shows when the sidecar is unreachable, and "which node, from where" is
+    // the whole diagnosis. The one case worth saying in plain words is the
+    // common one — node simply isn't installed.
+    let mut child = cmd.spawn().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound && node == "node" {
+            format!("node is not installed (looked in {})", NODE_BINARY_PATHS.join(", "))
+        } else {
+            format!("spawn {node} in {}: {e}", dir.display())
+        }
+    })?;
     let stdin = child.stdin.take().ok_or("sidecar stdin unavailable")?;
     let stdout = child.stdout.take().ok_or("sidecar stdout unavailable")?;
     Ok((child, stdin, stdout))
@@ -1582,7 +1646,7 @@ pub fn run() {
             // dispatches to it immediately. The app still works without it —
             // jobs just log as "not run" and retry on a later start.
             let sidecar = app.state::<SidecarState>().0.clone();
-            match spawn_sidecar() {
+            match spawn_sidecar(app.handle()) {
                 Ok((child, stdin, stdout)) => {
                     spawn_sidecar_reader(app.handle().clone(), sidecar.clone(), stdout);
                     *sidecar.proc.lock().unwrap() = Some(SidecarProc {
@@ -1591,7 +1655,12 @@ pub fn run() {
                         next_id: 0,
                     });
                 }
-                Err(e) => eprintln!("[stash] sidecar failed to start: {e}"),
+                Err(e) => {
+                    eprintln!("[stash] sidecar failed to start: {e}");
+                    if let Ok(mut slot) = sidecar.start_error.lock() {
+                        *slot = Some(e);
+                    }
+                }
             }
 
             // SQLite index: db in app data dir (outside the vault), initial
