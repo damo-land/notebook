@@ -366,6 +366,28 @@ body {
   color: var(--text-secondary);
 }
 
+/* Start button beside the "not running" ollama status line (T2). */
+.settings-start-btn {
+  margin-left: 8px;
+  font-size: 11px;
+  color: var(--text-primary);
+  background: transparent;
+  border: 1px solid var(--text-tertiary);
+  border-radius: 5px;
+  padding: 1px 8px;
+  cursor: pointer;
+}
+
+.settings-start-btn:disabled {
+  color: var(--text-tertiary);
+  cursor: default;
+}
+
+.settings-start-btn:focus {
+  outline: 2px solid var(--text-tertiary);
+  outline-offset: 1px;
+}
+
 /* tasks view (T8) */
 .tasks-view {
   display: flex;
