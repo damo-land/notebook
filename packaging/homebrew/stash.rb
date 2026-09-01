@@ -8,6 +8,12 @@
 # resulting stanza. The LIVE copy lives in the tap repo `damo/homebrew-tap`
 # as `Casks/stash.rb` — paste the printed stanza there, commit, and push.
 # Consumers then: `brew tap damo/tap && brew install --cask stash`.
+#
+# NO consumer-side dependencies, on purpose: the .app is self-contained — it
+# ships its own node runtime, claude CLI, and sidecar bundle inside the dmg,
+# so there is no `depends_on` for node (and none for ollama: Ollama is an
+# OPTIONAL runtime the app detects at runtime if the user happens to run it;
+# without it the app still works, with AI off or on the Claude path).
 cask "stash" do
   # version + sha256 are placeholders here; scripts/release.sh fills in the
   # real values for each release (sha256 is `shasum -a 256` of the dmg).

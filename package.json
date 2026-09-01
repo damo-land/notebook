@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit",
     "preview": "vite preview",
     "tauri": "tauri",
+    "postinstall": "npm --prefix sidecar install",
     "sidecar:install": "npm --prefix sidecar install",
     "sidecar:bundle": "npm --prefix sidecar run bundle",
     "sidecar:stage": "bash scripts/stage-sidecar-runtime.sh",
