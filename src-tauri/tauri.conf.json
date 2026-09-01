@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run build && npm run sidecar:package",
     "frontendDist": "../dist"
   },
   "app": {
@@ -33,6 +33,13 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "externalBin": ["binaries/node", "binaries/claude"],
+    "resources": {
+      "resources/sidecar/sidecar-bundle.mjs": "sidecar/sidecar-bundle.mjs"
+    },
+    "macOS": {
+      "entitlements": "entitlements.plist"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

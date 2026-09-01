@@ -15,6 +15,12 @@ dist-ssr
 # Rust build output
 src-tauri/target
 
+# Packaged sidecar runtime staging: binaries fetched/copied by
+# scripts/stage-sidecar-runtime.sh, JS bundle built by `npm run sidecar:bundle`.
+# Never committed.
+src-tauri/binaries/
+src-tauri/resources/
+
 # Scratch
 scripts/scratch/
 

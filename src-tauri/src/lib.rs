@@ -1112,16 +1112,67 @@ impl Sidecar {
 #[derive(Default)]
 struct SidecarState(Arc<Sidecar>);
 
-/// Dev wiring: the sidecar lives next to src-tauri in the repo.
-fn sidecar_dir() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../sidecar")
-}
-
-fn spawn_sidecar() -> Result<(Child, ChildStdin, ChildStdout), String> {
+/// Builds the sidecar spawn command.
+///
+/// Dev (`debug_assertions`): live repo source — PATH `node` running
+/// `--import tsx src/main.ts` from the repo's `sidecar/` dir, exactly as
+/// before packaging existed. The `CARGO_MANIFEST_DIR` repo path is
+/// compile-time and dev-only; release builds never reference it.
+#[cfg(debug_assertions)]
+fn sidecar_command(_app: &AppHandle) -> Result<Command, String> {
+    let sidecar_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../sidecar");
     let mut cmd = Command::new("node");
     cmd.args(["--import", "tsx", "src/main.ts"])
-        .current_dir(sidecar_dir())
-        .stdin(Stdio::piped())
+        .current_dir(sidecar_dir);
+    Ok(cmd)
+}
+
+/// Release: everything ships inside the .app — no node/npm/repo on the
+/// machine required (consumer-dmg T4, per docs/reports/consumer-dmg-t1-packaging.md).
+///
+///   * `node` + `claude` executables: bundle.externalBin, staged by
+///     scripts/stage-sidecar-runtime.sh — land in Contents/MacOS/ next to the
+///     app executable (Tauri strips the target-triple suffix).
+///   * the esbuild JS bundle: bundle.resources —
+///     Contents/Resources/sidecar/sidecar-bundle.mjs, resolved via the path API.
+///
+/// cwd is the app-data dir (writable, outside any repo); it is also the
+/// default cwd for the SDK's filesystem tools. STASH_CLAUDE_CLI tells the
+/// sidecar where the shipped Claude Code CLI lives (llm.ts forwards it as
+/// pathToClaudeCodeExecutable). The inherited env is passed through otherwise:
+/// notably USER/HOME must survive — the Claude OAuth Keychain item's account
+/// is $USER.
+#[cfg(not(debug_assertions))]
+fn sidecar_command(app: &AppHandle) -> Result<Command, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+    let bin_dir = exe
+        .parent()
+        .ok_or("app executable has no parent dir")?
+        .to_path_buf();
+    let node = bin_dir.join("node");
+    let bundle = app
+        .path()
+        .resolve(
+            "sidecar/sidecar-bundle.mjs",
+            tauri::path::BaseDirectory::Resource,
+        )
+        .map_err(|e| format!("resolve sidecar bundle: {e}"))?;
+    let cwd = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("app_data_dir: {e}"))?;
+    std::fs::create_dir_all(&cwd).map_err(|e| format!("create app data dir: {e}"))?;
+
+    let mut cmd = Command::new(node);
+    cmd.arg(bundle)
+        .current_dir(cwd)
+        .env("STASH_CLAUDE_CLI", bin_dir.join("claude"));
+    Ok(cmd)
+}
+
+fn spawn_sidecar(app: &AppHandle) -> Result<(Child, ChildStdin, ChildStdout), String> {
+    let mut cmd = sidecar_command(app)?;
+    cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
     // Auth is Claude Code OAuth only; make sure a stray API key in the app's
@@ -1645,7 +1696,7 @@ pub fn run() {
             // dispatches to it immediately. The app still works without it —
             // jobs just log as "not run" and retry on a later start.
             let sidecar = app.state::<SidecarState>().0.clone();
-            match spawn_sidecar() {
+            match spawn_sidecar(app.handle()) {
                 Ok((child, stdin, stdout)) => {
                     spawn_sidecar_reader(app.handle().clone(), sidecar.clone(), stdout);
                     *sidecar.proc.lock().unwrap() = Some(SidecarProc {
