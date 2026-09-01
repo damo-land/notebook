@@ -4,7 +4,7 @@
 #
 #   scripts/shoot.sh                  # capture view
 #   scripts/shoot.sh tasks            # one view
-#   scripts/shoot.sh capture tasks search chat editor
+#   scripts/shoot.sh capture tasks search chat editor settings
 #
 # For each view it launches `npm run tauri dev`, waits for the overlay panel to
 # appear on screen, captures that window (and only that window) to a PNG, and
@@ -112,9 +112,9 @@ fi
 
 for view in "${VIEWS[@]}"; do
   case "$view" in
-    capture | tasks | search | chat | editor) ;;
+    capture | tasks | search | chat | editor | settings) ;;
     *)
-      echo "shoot: unknown view '$view' (capture|tasks|search|chat|editor)" >&2
+      echo "shoot: unknown view '$view' (capture|tasks|search|chat|editor|settings)" >&2
       exit 2
       ;;
   esac

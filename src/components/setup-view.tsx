@@ -581,7 +581,12 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
                 ))}
               </select>
             ) : (
-              <span className="settings-note">{listing.note}</span>
+              <span className="settings-note">
+                {/* Presentation-only alignment (T4): the dropdown note and
+                    the ollama status line must not disagree — a sidecar
+                    that dropped out says so here too, not "checking…". */}
+                {ollamaState.kind === "unreachable" ? "sidecar unreachable" : listing.note}
+              </span>
             )}
           </div>
           <div className="settings-status">
@@ -596,7 +601,7 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
                 run <code>{SETUP_TOKEN_CMD}</code> in a terminal to sign in{" "}
                 <button
                   type="button"
-                  className="settings-select"
+                  className="settings-btn"
                   onClick={() => void copySetupCommand()}
                   aria-label="copy claude setup-token command"
                 >
@@ -609,7 +614,7 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
               {ollamaDown && (
                 <button
                   type="button"
-                  className="settings-start-btn"
+                  className="settings-btn settings-start-btn"
                   onClick={() => void startOllamaDaemon()}
                   disabled={ollamaStarting}
                 >
@@ -638,7 +643,7 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
         </>
       )}
 
-      <div className="tasks-empty under-input">{error ?? hint}</div>
+      <div className="tasks-empty under-input settings-footer">{error ?? hint}</div>
     </div>
   );
 }
