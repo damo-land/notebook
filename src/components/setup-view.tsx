@@ -68,6 +68,12 @@ interface ClaudeStatus {
   detail: string | null;
 }
 
+/** `ollama_start` result. `error` is set exactly when `started` is false. */
+interface OllamaStartResult {
+  started: boolean;
+  error?: string;
+}
+
 /**
  * One provider's probe state. "pending" until the first definitive result
  * (a resolved invoke) lands; a rejected invoke means the sidecar itself is
@@ -148,6 +154,10 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
   const [ollamaState, setOllamaState] = useState<ProbeState<OllamaProbe>>({ kind: "pending" });
   // The shape the settings-flow helpers take: null until a definitive probe.
   const ollamaProbe = ollamaState.kind === "done" ? ollamaState.value : null;
+  // Start button (T2): busy from click until the daemon answers a re-probe
+  // (or the retries run out); a failure renders inline under the status line.
+  const [ollamaStarting, setOllamaStarting] = useState(false);
+  const [ollamaStartError, setOllamaStartError] = useState<string | null>(null);
   const [version, setVersion] = useState("");
 
   const [error, setError] = useState<string | null>(null);
@@ -439,6 +449,41 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
     }
   };
 
+  // Start button (T2): ask the sidecar to spawn `ollama serve`, then re-probe
+  // on a fast local cadence (1.5s × 5) so the status line flips to "running"
+  // well inside 10s — the main poll loop is already on its slow 15s cadence
+  // by the time the button is visible, and this stays out of that loop's
+  // machinery. Both loops only ever write the latest probe result, so
+  // overlapping is harmless. A {started: false} result (binary missing) or
+  // a rejected invoke renders inline under the status line — never silent.
+  const startOllamaDaemon = async () => {
+    setOllamaStarting(true);
+    setOllamaStartError(null);
+    try {
+      const res = await invoke<OllamaStartResult>("ollama_start");
+      if (!res.started) {
+        setOllamaStartError(res.error ?? "failed to start ollama");
+        return;
+      }
+      for (let i = 0; i < 5; i++) {
+        await new Promise((r) => setTimeout(r, 1500));
+        try {
+          const probe = await invoke<OllamaProbe>("ollama_status");
+          setOllamaState({ kind: "done", value: probe });
+          if (probe.reachable) return;
+        } catch {
+          // Sidecar hiccup mid-retry: keep trying; the main poll loop still
+          // owns the long-term state either way.
+        }
+      }
+      setOllamaStartError("ollama was started but is not answering yet");
+    } catch (err) {
+      setOllamaStartError(`ollama_start failed: ${String(err)}`);
+    } finally {
+      setOllamaStarting(false);
+    }
+  };
+
   // "not authenticated" / "not running" render ONLY after a completed probe
   // that definitively said so. A sidecar that is down says exactly that —
   // it claims nothing about authentication or the ollama daemon.
@@ -467,6 +512,11 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
     ) : (
       <span className="field-parse field-parse-bad">not running</span>
     );
+  // Start renders ONLY beside a definitive "not running" — never while
+  // pending/unreachable (nothing to start yet / can't reach the sidecar)
+  // and never while running. The inline start error follows the same guard,
+  // so a stale error can't linger under a "running" line.
+  const ollamaDown = ollamaState.kind === "done" && !ollamaState.value.reachable;
 
   const hint = firstRun
     ? wizard.step === "vault"
@@ -554,7 +604,22 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
                 </button>
               </div>
             )}
-            <div>ollama — {ollamaLine}</div>
+            <div>
+              ollama — {ollamaLine}
+              {ollamaDown && (
+                <button
+                  type="button"
+                  className="settings-start-btn"
+                  onClick={() => void startOllamaDaemon()}
+                  disabled={ollamaStarting}
+                >
+                  {ollamaStarting ? "starting…" : "Start"}
+                </button>
+              )}
+            </div>
+            {ollamaDown && ollamaStartError !== null && (
+              <div className="field-parse field-parse-bad">{ollamaStartError}</div>
+            )}
           </div>
           <div className="field-editor">
             <span className="field-label">startup</span>

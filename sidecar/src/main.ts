@@ -21,7 +21,7 @@ import { createInterface } from "node:readline";
 import type { ChatHistoryTurn } from "./chat.ts";
 import { enrichNote, type RelatedNote } from "./enrich.ts";
 import { runPrompt } from "./llm.ts";
-import { probeOllama } from "./ollama.ts";
+import { probeOllama, startOllama } from "./ollama.ts";
 import {
   coerceLlmConfig,
   providerChatTurn,
@@ -172,6 +172,14 @@ async function handle(req: Request): Promise<void> {
       case "ollamaStatus": {
         // probeOllama never throws; a down daemon is {reachable: false}.
         respond(req.id, { ok: true, result: await probeOllama() });
+        break;
+      }
+      case "ollamaStart": {
+        // startOllama never throws; a missing binary is {started: false,
+        // error: "ollama not installed"}. The spawn is detached + unref'd,
+        // so awaiting it only waits for the spawn/error event, not the
+        // daemon — the event loop stays free.
+        respond(req.id, { ok: true, result: await startOllama() });
         break;
       }
       default:
