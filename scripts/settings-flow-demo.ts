@@ -44,11 +44,14 @@ import {
   assert.strictEqual(w.done, false);
 
   // First Enter: the vault step saves the (suggested) path and advances.
+  // This block models a fresh machine WITH Claude Code credentials — the
+  // creds-absent wizard is covered by the creds-gate block below.
   const llm = initialLlmChoice(null); // fresh machine: no saved llm config
   const first = wizardConfirm(w, {
     vaultPath: "/Users/me/Stash",
     llm,
     autostart: WIZARD_AUTOSTART_DEFAULT,
+    claudeCreds: true,
   });
   assert.deepStrictEqual(first.actions, [{ cmd: "set_vault_dir", path: "/Users/me/Stash" }]);
   assert.strictEqual(first.state.step, "ai");
@@ -64,6 +67,7 @@ import {
     vaultPath: "/Users/me/Stash",
     llm,
     autostart: WIZARD_AUTOSTART_DEFAULT,
+    claudeCreds: true,
   });
   assert.deepStrictEqual(second.actions, [
     { cmd: "set_llm_config", provider: "claude", model: DEFAULT_CLAUDE_MODEL },
@@ -77,6 +81,7 @@ import {
     vaultPath: "/Users/me/Stash",
     llm,
     autostart: false,
+    claudeCreds: true,
   });
   assert.deepStrictEqual(unchecked.actions[1], { cmd: "set_autostart", enabled: false });
   assert.strictEqual(unchecked.state.done, true);
@@ -91,9 +96,108 @@ import {
     vaultPath: "/Users/me/Stash",
     llm,
     autostart: WIZARD_AUTOSTART_DEFAULT,
+    claudeCreds: true,
   });
   assert.deepStrictEqual(retry.actions, second.actions); // stable retry plan
   assert.deepStrictEqual(retry.state, second.state);
+}
+
+// --- wizard creds gate (T7): claude is never persisted without credentials ---
+
+{
+  const wAi = { step: "ai" as const, done: false };
+
+  // Creds PRESENT: behaviour unchanged — the wizard preselects claude /
+  // default model and the untouched Enter persists exactly that.
+  assert.strictEqual(initialLlmChoice(null, true).provider, "claude");
+  const withCreds = wizardConfirm(wAi, {
+    vaultPath: "/Users/me/Stash",
+    llm: initialLlmChoice(null, true),
+    autostart: WIZARD_AUTOSTART_DEFAULT,
+    claudeCreds: true,
+  });
+  assert.deepStrictEqual(withCreds.actions, [
+    { cmd: "set_llm_config", provider: "claude", model: DEFAULT_CLAUDE_MODEL },
+    { cmd: "set_autostart", enabled: true },
+  ]);
+
+  // Creds ABSENT (false) or unresolved (null — counts as NOT detected, the
+  // same rule as providerSelectable): the initial choice never lands on
+  // claude. With no saved provider to fall back to it is "none" (AI off)…
+  assert.strictEqual(initialLlmChoice(null, false).provider, "none");
+  assert.strictEqual(initialLlmChoice(null, null).provider, "none");
+  // …a persisted/detected non-claude provider is respected as the fallback…
+  assert.strictEqual(
+    initialLlmChoice({ provider: "ollama", model: "qwen3:8b" }, false).provider,
+    "ollama"
+  );
+  assert.strictEqual(initialLlmChoice({ provider: "none", model: "" }, false).provider, "none");
+  // …and even a persisted claude demotes: never claude without creds.
+  assert.strictEqual(
+    initialLlmChoice({ provider: "claude", model: "claude-sonnet-5" }, false).provider,
+    "none"
+  );
+  // The claude model slot survives the demotion, so a later sign-in toggles
+  // back to a coherent pick instead of an empty one.
+  assert.strictEqual(
+    selectedModel(withProvider(initialLlmChoice(null, false), "claude")),
+    DEFAULT_CLAUDE_MODEL
+  );
+
+  // Save path backstop: even a claude CHOICE cannot persist claude when the
+  // creds signal says absent — the plan writes provider "none" instead.
+  const claudeChoice = initialLlmChoice({ provider: "claude", model: "claude-sonnet-5" }, true);
+  for (const creds of [false, null] as const) {
+    const gated = wizardConfirm(wAi, {
+      vaultPath: "/Users/me/Stash",
+      llm: claudeChoice,
+      autostart: WIZARD_AUTOSTART_DEFAULT,
+      claudeCreds: creds,
+    });
+    assert.deepStrictEqual(gated.actions, [
+      { cmd: "set_llm_config", provider: "none", model: "" },
+      { cmd: "set_autostart", enabled: true },
+    ]);
+    assert.strictEqual(gated.state.done, true);
+  }
+
+  // Fresh machine, creds absent, Enter-Enter end to end: nothing in either
+  // plan ever writes provider "claude".
+  const llm = initialLlmChoice(null, false);
+  const first = wizardConfirm(initialWizard(), {
+    vaultPath: "/Users/me/Stash",
+    llm,
+    autostart: WIZARD_AUTOSTART_DEFAULT,
+    claudeCreds: false,
+  });
+  const second = wizardConfirm(first.state, {
+    vaultPath: "/Users/me/Stash",
+    llm,
+    autostart: WIZARD_AUTOSTART_DEFAULT,
+    claudeCreds: false,
+  });
+  for (const action of [...first.actions, ...second.actions]) {
+    assert.notStrictEqual(
+      action.cmd === "set_llm_config" ? action.provider : "",
+      "claude",
+      "wizard must never persist claude without credentials"
+    );
+  }
+  assert.deepStrictEqual(second.actions[0], { cmd: "set_llm_config", provider: "none", model: "" });
+
+  // A non-claude choice is untouched by the gate.
+  const ollamaChoice = withModel(withProvider(initialLlmChoice(null, false), "ollama"), "qwen3:8b");
+  const ollamaSave = wizardConfirm(wAi, {
+    vaultPath: "/Users/me/Stash",
+    llm: ollamaChoice,
+    autostart: WIZARD_AUTOSTART_DEFAULT,
+    claudeCreds: false,
+  });
+  assert.deepStrictEqual(ollamaSave.actions[0], {
+    cmd: "set_llm_config",
+    provider: "ollama",
+    model: "qwen3:8b",
+  });
 }
 
 // --- provider toggle switches the model-list source --------------------------

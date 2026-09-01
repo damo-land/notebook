@@ -66,21 +66,43 @@ export interface LlmChoice {
 }
 
 /** Seed a choice from the saved config (get_llm_config), or from nothing:
- *  claude / DEFAULT_CLAUDE_MODEL, the wizard's preselection. */
-export function initialLlmChoice(saved?: { provider: string; model: string } | null): LlmChoice {
-  const choice: LlmChoice = {
+ *  claude / DEFAULT_CLAUDE_MODEL, the wizard's preselection.
+ *
+ *  `claudeCreds` — the claude_creds_present probe result, null while
+ *  unresolved, which counts as NOT detected (the providerSelectable rule) —
+ *  gates the claude landing (T7): without credentials the choice falls back
+ *  to the persisted/detected provider (a saved ollama/none is respected
+ *  as-is), and when that too would be claude it demotes to "none" — the
+ *  wizard must never preselect a provider that cannot make a single call.
+ *  The default `true` keeps creds-agnostic call sites (settings mode, where
+ *  the dropdown already gates claude) unchanged. */
+export function initialLlmChoice(
+  saved?: { provider: string; model: string } | null,
+  claudeCreds: boolean | null = true
+): LlmChoice {
+  const base: LlmChoice = {
     provider: "claude",
     claudeModel: DEFAULT_CLAUDE_MODEL,
     ollamaModel: "",
   };
-  if (!saved) return choice;
-  if (saved.provider === "ollama") {
-    return { ...choice, provider: "ollama", ollamaModel: saved.model };
+  let choice = base;
+  if (saved) {
+    if (saved.provider === "ollama") {
+      choice = { ...base, provider: "ollama", ollamaModel: saved.model };
+    } else if (saved.provider === "none") {
+      // "none" keeps the default claude slot, so switching AI back on lands
+      // on a coherent model instead of an empty pick.
+      choice = { ...base, provider: "none" };
+    } else {
+      choice = { ...base, claudeModel: saved.model || DEFAULT_CLAUDE_MODEL };
+    }
   }
-  // "none" keeps the default claude slot, so switching AI back on lands on
-  // a coherent model instead of an empty pick.
-  if (saved.provider === "none") return { ...choice, provider: "none" };
-  return { ...choice, claudeModel: saved.model || DEFAULT_CLAUDE_MODEL };
+  // The creds gate. The claude slot keeps its model, so a later sign-in
+  // toggles straight back to a coherent pick.
+  if (choice.provider === "claude" && claudeCreds !== true) {
+    return { ...choice, provider: "none" };
+  }
+  return choice;
 }
 
 /** The live provider's model — what a save would write. "none" has none. */
@@ -226,8 +248,17 @@ export type SaveAction =
   | { cmd: "set_llm_config"; provider: ProviderId; model: string }
   | { cmd: "set_autostart"; enabled: boolean };
 
-function llmSaveAction(choice: LlmChoice): SaveAction {
-  return { cmd: "set_llm_config", provider: choice.provider, model: selectedModel(choice) };
+/** The set_llm_config a choice saves. `claudeCreds` (same signal and
+ *  null-counts-as-absent rule as providerSelectable / initialLlmChoice) is
+ *  the wizard's save-path backstop (T7): a claude choice without credentials
+ *  saves provider "none" instead — claude must never be persisted from the
+ *  wizard when no Claude Code credentials exist. The default `true` keeps
+ *  settings-mode savePlan unchanged: there the dropdown already gates
+ *  claude, and a persisted choice must round-trip as-is. */
+function llmSaveAction(choice: LlmChoice, claudeCreds: boolean | null = true): SaveAction {
+  const gated =
+    choice.provider === "claude" && claudeCreds !== true ? withProvider(choice, "none") : choice;
+  return { cmd: "set_llm_config", provider: gated.provider, model: selectedModel(gated) };
 }
 
 // Wizard: an ORDERED action list per Enter, run one at a time — the vault
@@ -248,14 +279,16 @@ export function initialWizard(): WizardState {
  *  awaits each before the next), and the next state. vault → save the path,
  *  advance; ai → save the (pre)selected llm, then ALWAYS set_autostart with
  *  the checkbox state (checked default → true; unchecked → false — an
- *  explicit disable, idempotent on a fresh machine), done. Pure: a failed
- *  action leaves the caller on the same state, and re-confirming it yields
- *  the IDENTICAL plan — the retry after a set_autostart refusal re-runs the
- *  idempotent llm write, then set_autostart again, with nothing duplicated
- *  beyond that. */
+ *  explicit disable, idempotent on a fresh machine), done. `claudeCreds`
+ *  (the claude_creds_present probe; null = unresolved = absent) gates the
+ *  llm write (T7): a claude choice without credentials persists "none"
+ *  instead — see llmSaveAction. Pure: a failed action leaves the caller on
+ *  the same state, and re-confirming it yields the IDENTICAL plan — the
+ *  retry after a set_autostart refusal re-runs the idempotent llm write,
+ *  then set_autostart again, with nothing duplicated beyond that. */
 export function wizardConfirm(
   state: WizardState,
-  args: { vaultPath: string; llm: LlmChoice; autostart: boolean }
+  args: { vaultPath: string; llm: LlmChoice; autostart: boolean; claudeCreds: boolean | null }
 ): { state: WizardState; actions: SaveAction[] } {
   if (state.step === "vault") {
     return {
@@ -265,7 +298,10 @@ export function wizardConfirm(
   }
   return {
     state: { step: "ai", done: true },
-    actions: [llmSaveAction(args.llm), { cmd: "set_autostart", enabled: args.autostart }],
+    actions: [
+      llmSaveAction(args.llm, args.claudeCreds),
+      { cmd: "set_autostart", enabled: args.autostart },
+    ],
   };
 }
 
