@@ -1601,6 +1601,15 @@ pub fn run() {
             shoot_show_overlay
         ])
         .setup(|app| {
+            // First-run LLM provider auto-detect (claude > ollama > none),
+            // BEFORE anything below reads the llm config (the enrichment
+            // retry pass can dispatch immediately). No-op on every launch
+            // where config.json already has an `llm` key; silent by design
+            // and bounded (~1s worst case) — see llm_config.rs.
+            if let Ok(home) = app.path().home_dir() {
+                llm_config::detect_provider_on_first_run(&home);
+            }
+
             // Start the agent sidecar first: the enrichment retry pass below
             // dispatches to it immediately. The app still works without it —
             // jobs just log as "not run" and retry on a later start.
