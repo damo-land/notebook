@@ -1258,6 +1258,36 @@ async fn await_sidecar_result(
     Ok(parsed.get("result").cloned().unwrap_or(serde_json::Value::Null))
 }
 
+/// Are Claude Code credentials present on this machine? (T5) Fast, local,
+/// no sidecar: `~/.claude/.credentials.json` exists, or the macOS Keychain
+/// holds a "Claude Code-credentials" generic password. The settings view
+/// offers claude as a provider exactly when this is true — UI-level
+/// availability only; the Rust side (LLM_PROVIDERS) still accepts "claude"
+/// regardless, and a false here is a status/hint, never an error.
+fn claude_creds_file_present(home: &Path) -> bool {
+    home.join(".claude").join(".credentials.json").is_file()
+}
+
+fn claude_creds_keychain_present() -> bool {
+    std::process::Command::new("security")
+        .args(["find-generic-password", "-s", "Claude Code-credentials"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+#[tauri::command]
+fn claude_creds_present(app: AppHandle) -> bool {
+    let file = app
+        .path()
+        .home_dir()
+        .map(|h| claude_creds_file_present(&h))
+        .unwrap_or(false);
+    file || claude_creds_keychain_present()
+}
+
 /// Claude auth status: `{authenticated: bool, detail: string|null}`.
 #[tauri::command]
 async fn claude_auth_status(
@@ -1586,6 +1616,7 @@ pub fn run() {
             set_llm_config,
             get_autostart,
             set_autostart,
+            claude_creds_present,
             claude_auth_status,
             ollama_status,
             ollama_start,
@@ -1817,4 +1848,29 @@ pub fn run() {
                 kill_sidecar(app);
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The file half of the Claude-credentials probe (T5): true exactly when
+    /// `~/.claude/.credentials.json` is a file. (The keychain half shells out
+    /// to `security` and is not exercised here.)
+    #[test]
+    fn claude_creds_file_probe() {
+        let home = std::env::temp_dir().join(format!(
+            "stash-creds-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        assert!(!claude_creds_file_present(&home));
+
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        assert!(!claude_creds_file_present(&home)); // dir alone is not creds
+
+        std::fs::write(home.join(".claude/.credentials.json"), "{}").unwrap();
+        assert!(claude_creds_file_present(&home));
+    }
 }
