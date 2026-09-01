@@ -162,6 +162,10 @@ export async function runPrompt(
       prompt: text,
       options: {
         model,
+        // Packaged app: Rust passes the shipped Claude Code CLI's path
+        // (Contents/MacOS/claude) via STASH_CLAUDE_CLI. When unset (dev,
+        // demos, tests) the SDK's default node_modules resolution applies.
+        pathToClaudeCodeExecutable: process.env["STASH_CLAUDE_CLI"] || undefined,
         tools: opts.tools ?? [],
         allowedTools: opts.allowedTools,
         maxTurns: opts.maxTurns ?? 1,
