@@ -1,6 +1,6 @@
 # Settings screen overhaul: truthful status, actionable providers, visual polish
 
-Status: draft
+Status: done
 Source: Settings screen shows stale/false provider status (one-shot probe races sidecar boot), offers no way to start ollama or authenticate claude, and looks unfinished (native select chrome, uneven gaps, left-hugging layout).
 
 ## Goal
@@ -30,9 +30,10 @@ without reopening the screen).
 
 ### T1: Live provider status (kill the probe race)
 - Type: ship
-- Status: todo
-- Branch: —
+- Status: landed
+- Branch: anchor/settings-overhaul-t1
 - Escalation: none
+- Checkers: behavioral PASS / audit PASS — flags: none (informational note: model-dropdown listing collapses ollama "unreachable" and "pending" into same "checking…" text, src/lib/settings-flow.ts:101–107 — uncovered by criteria, candidate for T4)
 - Acceptance criteria:
   - In `src/components/setup-view.tsx`, the one-shot probe guard (`probedRef`,
     currently around lines 174–179) is replaced by a polling loop: while the
@@ -54,9 +55,10 @@ without reopening the screen).
 
 ### T2: Ollama Start button
 - Type: ship
-- Status: todo
-- Branch: —
+- Status: landed
+- Branch: anchor/settings-overhaul-t2
 - Escalation: none
+- Checkers: behavioral PASS / audit PASS — flags: none
 - Acceptance criteria:
   - When the ollama status line reports not running, a "Start" button renders
     next to it in `src/components/setup-view.tsx`.
@@ -78,9 +80,10 @@ without reopening the screen).
 
 ### T3: Claude auth guidance
 - Type: ship
-- Status: todo
-- Branch: —
+- Status: landed
+- Branch: anchor/settings-overhaul-t3
 - Escalation: none
+- Checkers: behavioral PASS / audit PASS — flags: none
 - Acceptance criteria:
   - When a completed probe (sidecar reachable, probe returned) definitively
     reports claude unauthenticated, the settings view renders guidance naming
@@ -96,9 +99,10 @@ without reopening the screen).
 
 ### T4: Visual restyle
 - Type: ship
-- Status: todo
-- Branch: —
+- Status: landed
+- Branch: anchor/settings-overhaul-t4
 - Escalation: none
+- Checkers: behavioral PASS / audit PASS — flags: .gitignore anchor narrowed, shoot.sh + App.tsx screenshot-tooling additions, dropdown "sidecar unreachable" text (detail: docs/reports/settings-overhaul-t4-check.md)
 - Acceptance criteria:
   - Native `<select>` chrome is gone: provider and model selectors in
     `src/components/setup-view.tsx` are styled (via `src/App.css`) with
@@ -110,9 +114,11 @@ without reopening the screen).
     right-hand column) — verified by screenshot.
   - Status lines and any T2/T3 buttons/errors follow the same spacing system.
   - A screenshot of the settings view is produced via the existing tooling
-    (`scripts/settings-flow-demo.ts` or `scripts/shoot.sh`) and saved to the
-    task report directory; the screenshot shows custom selects and consistent
-    spacing.
+    (`scripts/settings-flow-demo.ts` or `scripts/shoot.sh`) and committed at
+    `docs/screenshots/settings-restyle.png`; the screenshot shows custom
+    selects and consistent spacing.
+    <!-- amended at dispatch: original said "task report directory"
+         (docs/reports/) — anchor state, off-limits to builders -->>
   - Existing CSS used by other screens (`.field-editor`, `.palette`,
     `.overlay`) is not visually regressed: those class definitions are either
     untouched or changes are additive (new classes/modifiers only).
