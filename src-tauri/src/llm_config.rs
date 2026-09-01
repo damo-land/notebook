@@ -135,6 +135,108 @@ pub fn update_config_json(
     .map_err(|e| format!("write {}: {e}", path.display()))
 }
 
+// ---------------------------------------------------------------------------
+// First-run provider auto-detect (T3): claude > ollama > none.
+//
+// Runs once, silently, at app setup — ONLY when the config has no `llm` key
+// at all. Whatever it picks is persisted, so it never runs again and never
+// overwrites a user's choice (including an explicit "none"). Every probe
+// failure is silent by construction: the probes return bool, nothing here
+// errors, logs at error level, or touches the UI.
+// ---------------------------------------------------------------------------
+
+/// True when the config file already carries an `llm` key (any value):
+/// detection must then not run at all.
+fn config_has_llm_key(home: &Path) -> bool {
+    std::fs::read_to_string(config_path(home))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .map(|root| root.get("llm").is_some())
+        .unwrap_or(false)
+}
+
+/// Claude Code credentials present on this machine?
+///
+/// Chosen signal: `~/.claude/.credentials.json` exists (where Claude Code
+/// stores OAuth credentials when not using the keychain), OR the macOS
+/// Keychain holds a "Claude Code-credentials" generic password (the default
+/// storage on macOS) — checked via `security find-generic-password`, exit
+/// status only, output discarded. Either hit means `claude setup-token` /
+/// login has happened here, which is exactly what the sidecar's claude
+/// provider needs.
+fn claude_credentials_present() -> bool {
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.trim().is_empty()
+            && Path::new(&home).join(".claude/.credentials.json").exists()
+        {
+            return true;
+        }
+    }
+    std::process::Command::new("security")
+        .args(["find-generic-password", "-s", "Claude Code-credentials"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Ollama responding on localhost:11434?
+///
+/// Plain TCP connect with a 1s timeout — src-tauri deliberately has no HTTP
+/// client dependency, and a listener on Ollama's well-known port is in
+/// practice Ollama. Tradeoff: any other process squatting on 11434 would
+/// read as Ollama; acceptable for a one-time silent default that the user
+/// can change in settings.
+fn ollama_reachable() -> bool {
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 11434));
+    std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(1000)).is_ok()
+}
+
+/// The detection core, probes injected so tests can mock them. Returns the
+/// persisted choice, or `None` when the config already has an `llm` key
+/// (no-op — the probes are not even called). Order: claude credentials ->
+/// claude (default model), else ollama reachable -> ollama (empty model,
+/// the existing ollama defaulting), else none. A failed write is swallowed:
+/// worst case detection just runs again next launch.
+pub fn detect_and_persist_provider(
+    home: &Path,
+    claude_creds: impl FnOnce() -> bool,
+    ollama_up: impl FnOnce() -> bool,
+) -> Option<LlmConfig> {
+    if config_has_llm_key(home) {
+        return None;
+    }
+    let chosen = if claude_creds() {
+        LlmConfig::default() // claude / claude-haiku-4-5
+    } else if ollama_up() {
+        LlmConfig {
+            provider: "ollama".to_string(),
+            model: String::new(),
+        }
+    } else {
+        LlmConfig {
+            provider: "none".to_string(),
+            model: String::new(),
+        }
+    };
+    let _ = update_config_json(home, |root| {
+        root.insert(
+            "llm".into(),
+            serde_json::json!({ "provider": chosen.provider, "model": chosen.model }),
+        );
+    });
+    Some(chosen)
+}
+
+/// [`detect_and_persist_provider`] with the real probes — the one entry
+/// point app setup calls (lib.rs), before anything reads the llm config.
+/// Bounded: file stat + at most one `security` exec + a 1s-capped TCP
+/// connect, and skipped entirely on every launch after the first.
+pub fn detect_provider_on_first_run(home: &Path) {
+    detect_and_persist_provider(home, claude_credentials_present, ollama_reachable);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -353,6 +455,84 @@ mod tests {
         assert_eq!(root["llm"]["provider"], "claude");
 
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// First-run auto-detect, all three outcomes (probes mocked as closures):
+    /// claude credentials win over ollama, ollama wins over none, and the
+    /// chosen provider is persisted with its default model (claude ->
+    /// claude-haiku-4-5, ollama/none -> empty, matching the existing
+    /// per-provider defaulting).
+    #[test]
+    fn detect_persists_claude_over_ollama_over_none() {
+        // claude creds present -> claude, even with ollama also up.
+        let home = scratch_home("detect-claude");
+        let chosen = detect_and_persist_provider(&home, || true, || true);
+        assert_eq!(
+            chosen,
+            Some(LlmConfig {
+                provider: "claude".into(),
+                model: DEFAULT_CLAUDE_MODEL.into()
+            })
+        );
+        assert_eq!(read_llm_config(&home), chosen.unwrap());
+        let _ = std::fs::remove_dir_all(&home);
+
+        // no claude creds, ollama reachable -> ollama, empty model.
+        let home = scratch_home("detect-ollama");
+        let chosen = detect_and_persist_provider(&home, || false, || true);
+        assert_eq!(
+            chosen,
+            Some(LlmConfig {
+                provider: "ollama".into(),
+                model: String::new()
+            })
+        );
+        assert_eq!(read_llm_config(&home), chosen.unwrap());
+        let _ = std::fs::remove_dir_all(&home);
+
+        // neither -> none, persisted (so detection never runs again), and the
+        // resulting config gates LLM calls without any error.
+        let home = scratch_home("detect-none");
+        let chosen = detect_and_persist_provider(&home, || false, || false);
+        assert_eq!(
+            chosen,
+            Some(LlmConfig {
+                provider: "none".into(),
+                model: String::new()
+            })
+        );
+        let raw = std::fs::read_to_string(config_path(&home)).unwrap();
+        let root: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(root["llm"]["provider"], "none");
+        assert!(llm_disabled(&read_llm_config(&home)));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Detection is a no-op whenever the config already has an `llm` key —
+    /// including `provider: "none"`: a persisted explicit off must never be
+    /// flipped back on by a probe. The probes must not even run (they panic
+    /// here), and the file bytes stay untouched.
+    #[test]
+    fn detect_is_noop_when_llm_key_exists() {
+        for persisted in [
+            r#"{"vaultDir": "~/Stash", "llm": {"provider": "none"}}"#,
+            r#"{"llm": {"provider": "ollama", "model": "llama3.2:3b"}}"#,
+        ] {
+            let home = scratch_home("detect-noop");
+            write_config(&home, persisted);
+            let chosen = detect_and_persist_provider(
+                &home,
+                || panic!("claude probe must not run when llm key exists"),
+                || panic!("ollama probe must not run when llm key exists"),
+            );
+            assert_eq!(chosen, None);
+            assert_eq!(
+                std::fs::read_to_string(config_path(&home)).unwrap(),
+                persisted,
+                "existing config must not be rewritten"
+            );
+            let _ = std::fs::remove_dir_all(&home);
+        }
     }
 
     /// NOT a live smoke. `app.autolaunch()` needs a real `AppHandle` — the
