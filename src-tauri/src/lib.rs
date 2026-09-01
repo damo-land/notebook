@@ -993,14 +993,20 @@ fn set_llm_config(app: AppHandle, provider: String, model: String) -> Result<(),
             llm_config::LLM_PROVIDERS
         ));
     }
-    if model.is_empty() {
+    // "none" (AI off) has no model by construction; every other provider
+    // needs one.
+    if provider != "none" && model.is_empty() {
         return Err("LLM model is empty".into());
     }
     let home = app.path().home_dir().map_err(|e| e.to_string())?;
     llm_config::update_config_json(&home, |root| {
         root.insert(
             "llm".into(),
-            serde_json::json!({ "provider": provider, "model": model }),
+            if provider == "none" {
+                serde_json::json!({ "provider": provider })
+            } else {
+                serde_json::json!({ "provider": provider, "model": model })
+            },
         );
     })
 }
@@ -1322,6 +1328,12 @@ async fn chat_send(
     // LLM config is read fresh from disk PER TURN (never cached): a provider
     // or model change in settings applies to the next message, no restart.
     let llm = llm_config::read_llm_config(&app.path().home_dir().map_err(|e| e.to_string())?);
+    // Provider "none" (AI off): refuse BEFORE any sidecar call. The chat
+    // view gates itself on the same config and shows a disabled state, so
+    // this is the backstop that keeps a stray send from reaching the LLM.
+    if llm_config::llm_disabled(&llm) {
+        return Err("AI is disabled — choose a provider in Settings".into());
+    }
     let rx = sidecar.0.call(
         "chat",
         Some(serde_json::json!({
@@ -1406,6 +1418,17 @@ fn spawn_enrich_worker(
             // hence $HOME): a provider/model change applies to the next
             // queued job without a restart, matching chat_send.
             let llm = llm_config::read_llm_config_env_home();
+            // Provider "none" (AI off): no LLM work at all — the sidecar is
+            // never called and NO `enriched:` marker is written, so the note
+            // stays pending and a later provider change picks it up (next
+            // launch: `dispatched` still stops a retry loop this session).
+            if llm_config::llm_disabled(&llm) {
+                eprintln!(
+                    "[enrich] {}: skipped, AI is off (provider none); note left unmarked",
+                    job.id
+                );
+                continue;
+            }
             let params = serde_json::json!({
                 "vaultDir": vault_dir.to_string_lossy(),
                 "path": job.path,

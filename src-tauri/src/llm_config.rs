@@ -22,7 +22,10 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 /// Providers the seam understands. Anything else in the file reads as claude.
-pub const LLM_PROVIDERS: [&str; 2] = ["claude", "ollama"];
+/// "none" is the explicit off switch (UI label `--`): AI disabled, no LLM
+/// call is ever dispatched — see [`llm_disabled`]. It is only ever chosen,
+/// never a fallback: an unknown provider still reads as claude.
+pub const LLM_PROVIDERS: [&str; 3] = ["claude", "ollama", "none"];
 
 pub const DEFAULT_LLM_PROVIDER: &str = "claude";
 pub const DEFAULT_CLAUDE_MODEL: &str = "claude-haiku-4-5";
@@ -40,6 +43,14 @@ impl Default for LlmConfig {
             model: DEFAULT_CLAUDE_MODEL.to_string(),
         }
     }
+}
+
+/// THE gating predicate for provider "none" (AI off): every LLM dispatch —
+/// the enrichment worker, chat — checks this before calling the sidecar and
+/// performs no LLM work when it is true. Skipped enrichment writes NO
+/// `enriched:` marker: off must not mark notes as done.
+pub fn llm_disabled(config: &LlmConfig) -> bool {
+    config.provider == "none"
 }
 
 /// `~/.config/stash/config.json` — the one config file, shared with
@@ -190,6 +201,42 @@ mod tests {
                 model: "claude-opus-5".into()
             }
         );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Provider "none" (AI off, UI label `--`) is a KNOWN provider: it reads
+    /// back as none (empty model), persists through the merge-writer, and
+    /// gates every LLM call via llm_disabled. An unknown provider still
+    /// falls back to the claude default — off is an explicit choice, never
+    /// a typo's meaning.
+    #[test]
+    fn provider_none_is_accepted_persisted_and_gates() {
+        assert!(LLM_PROVIDERS.contains(&"none"));
+
+        let none = serde_json::json!({"llm": {"provider": "none"}});
+        let cfg = llm_config_from_json(&none);
+        assert_eq!(cfg.provider, "none");
+        assert_eq!(cfg.model, "");
+        assert!(llm_disabled(&cfg));
+        assert!(!llm_disabled(&LlmConfig::default()));
+        assert!(!llm_disabled(&LlmConfig {
+            provider: "ollama".into(),
+            model: "llama3.2:3b".into()
+        }));
+
+        // Unknown provider: still the claude default, NOT none.
+        let unknown = serde_json::json!({"llm": {"provider": "gpt"}});
+        assert_eq!(llm_config_from_json(&unknown).provider, "claude");
+
+        // Persisted round trip through the same merge-writer as settings.
+        let home = scratch_home("none");
+        update_config_json(&home, |root| {
+            root.insert("llm".into(), serde_json::json!({"provider": "none"}));
+        })
+        .unwrap();
+        let read = read_llm_config(&home);
+        assert_eq!(read.provider, "none");
+        assert!(llm_disabled(&read));
         let _ = std::fs::remove_dir_all(&home);
     }
 
