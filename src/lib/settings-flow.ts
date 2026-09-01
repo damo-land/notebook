@@ -130,10 +130,69 @@ export function modelListing(provider: ProviderId, probe: OllamaProbe | null): M
 }
 
 /** The ollama option stays visible but disabled until the probe says the
- *  daemon is up; claude is always selectable (auth is a status line, not a
- *  gate — an unauthenticated pick just fails at chat time with its message). */
-export function providerSelectable(provider: ProviderId, probe: OllamaProbe | null): boolean {
+ *  daemon is up; claude stays visible but disabled until Claude Code
+ *  credentials are detected on the machine (`claudeCreds` — the
+ *  claude_creds_present probe result, null while unresolved, which counts as
+ *  NOT detected). UI-level availability only: the Rust side still accepts
+ *  "claude" regardless. "none" (`--`) is always selectable — off needs no
+ *  daemon and no credentials. */
+export function providerSelectable(
+  provider: ProviderId,
+  probe: OllamaProbe | null,
+  claudeCreds: boolean | null
+): boolean {
+  if (provider === "claude") return claudeCreds === true;
   return provider !== "ollama" || probe?.reachable === true;
+}
+
+/** Hint rendered for the claude option while it is not selectable (no Claude
+ *  Code credentials detected); the sign-in command follows it in the view. */
+export const CLAUDE_CREDS_HINT = "Claude needs Claude Code credentials — sign in with";
+
+// --- the ONE AI status row (T5) -----------------------------------------------
+//
+// Sidecar/provider failures must never surface as dialogs or toasts; the
+// settings status row is THE place degradation shows up. The row reflects the
+// live selection: off gets the fixed enable-hint copy, a real provider gets
+// provider + model + whether the node sidecar (which makes every LLM call) is
+// answering.
+
+/** Exact off-state copy — checked verbatim. */
+export const AI_OFF_STATUS = "AI off — pick Claude or Ollama to enable chat & enrichment";
+
+/** One probe's lifecycle (mirrors the view's ProbeState kinds). */
+export type ProbeKind = "pending" | "unreachable" | "done";
+
+export type SidecarLiveness = "checking" | "up" | "down";
+
+/** Consecutive rejected probe invokes with no definitive result before a
+ *  still-booting sidecar is called down — the sidecar starts asynchronously,
+ *  so the first rejection or two just mean "not up YET". */
+export const SIDECAR_BOOT_FAILS = 3;
+
+/** Fold both provider probes into one sidecar verdict: any resolved invoke
+ *  proves the sidecar is up; "unreachable" (a rejection AFTER a definitive
+ *  result) proves it dropped out; all-pending is still booting until
+ *  `consecutiveFails` rejections say it never came up. */
+export function sidecarLiveness(
+  claude: ProbeKind,
+  ollama: ProbeKind,
+  consecutiveFails: number
+): SidecarLiveness {
+  if (claude === "done" || ollama === "done") return "up";
+  if (claude === "unreachable" || ollama === "unreachable") return "down";
+  return consecutiveFails >= SIDECAR_BOOT_FAILS ? "down" : "checking";
+}
+
+/** The status row's text. Off → the exact enable-hint copy; claude/ollama →
+ *  provider + model and the sidecar verdict. */
+export function aiStatusLine(choice: LlmChoice, sidecar: SidecarLiveness): string {
+  if (choice.provider === "none") return AI_OFF_STATUS;
+  const name = choice.provider === "claude" ? "Claude" : "Ollama";
+  const model = selectedModel(choice) || "no model picked";
+  const link =
+    sidecar === "up" ? "sidecar up" : sidecar === "down" ? "sidecar down" : "sidecar checking…";
+  return `${name} · ${model} — ${link}`;
 }
 
 // --- field order: what Tab / arrows cycle through -----------------------------

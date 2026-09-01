@@ -428,6 +428,13 @@ body {
   color: var(--text-secondary);
 }
 
+/* THE AI status row (T5): the one summary line heading the status block —
+   provider + model + sidecar verdict, or the AI-off enable hint. Same 12px
+   rhythm, lifted to primary so it reads before the per-provider lines. */
+.settings-status-row {
+  color: var(--text-primary);
+}
+
 .settings-status code {
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
   font-size: 11px;
