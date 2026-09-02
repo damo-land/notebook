@@ -20,12 +20,12 @@ cask "stash" do
   version "0.1.0"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
 
-  # Release asset on GitHub. The repo defaults to damo/stash — change the
+  # Release asset on GitHub. The repo is damo-land/notebook — change the
   # owner/name in this URL (and homepage) if the app ever moves.
-  url "https://github.com/damo/stash/releases/download/v#{version}/stash_#{version}_aarch64.dmg"
+  url "https://github.com/damo-land/notebook/releases/download/v#{version}/stash_#{version}_aarch64.dmg"
   name "stash"
   desc "Spotlight-style note capture with a local markdown vault"
-  homepage "https://github.com/damo/stash"
+  homepage "https://github.com/damo-land/notebook"
 
   app "stash.app"
 

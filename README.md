@@ -7,7 +7,13 @@ for the AI features (Claude via your subscription, or local Ollama).
 
 ## Install
 
-- From a release: download the dmg, drag `stash.app` to Applications.
+- From a release: download the dmg from the
+  [latest release](https://github.com/damo-land/notebook/releases/latest),
+  drag `stash.app` to Applications. Signed and notarized — no Gatekeeper
+  warnings. Everything is bundled; no other installs needed. AI is optional:
+  the app detects Claude Code credentials or a local
+  [Ollama](https://ollama.com) and works fully as a note vault without
+  either.
 - From source: `npm install && npm run tauri build` (artifacts under
   `src-tauri/target/release/bundle/`), or run in dev with `npm run tauri dev`.
 

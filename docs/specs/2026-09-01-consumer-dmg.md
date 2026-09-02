@@ -1,6 +1,6 @@
 # Consumer-friendly DMG: self-contained app, optional AI
 
-Status: draft
+Status: done
 Source: DMG installs today still assume a dev machine (node, npm-installed
 sidecar at the repo path, rust toolchain) — consumers hit background errors and
 get stuck on settings; app must work out of the box with AI as an optional
@@ -155,9 +155,13 @@ T1 proves or kills this before any packaging code is written.
 
 ### T6: Release pipeline ships the bundle
 - Type: ship
-- Status: todo
-- Branch: —
+- Status: landed
+- Branch: anchor/consumer-dmg-t6
 - Escalation: none
+- Checkers: behavioral PASS / audit PASS — flags: package.json postinstall +
+  lockfile hasInstallScript (tripwire paths; hook verified verbatim), signing
+  rework judged a strengthening — detail in
+  docs/reports/consumer-dmg-t6-check.md; tripwire blocks auto-land
 - Blocked by: T4.
 - Acceptance criteria:
   - `scripts/release.sh --dry-run` reflects the new bundle steps;
@@ -172,8 +176,9 @@ T1 proves or kills this before any packaging code is written.
 
 ### T7: Flag fixes — config-clobber guard + wizard creds gating
 - Type: ship
-- Status: todo
-- Branch: —
+- Status: landed
+- Checkers: behavioral PASS / audit PASS — flags: none
+- Branch: anchor/consumer-dmg-t7
 - Escalation: none
 - Source: checker flags from T3 and T5 (docs/reports/consumer-dmg-t3-check.md
   flag 1, docs/reports/consumer-dmg-t5-check.md flag 1), accepted at land on
