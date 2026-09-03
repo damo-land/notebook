@@ -25,6 +25,7 @@
 // src/lib/chat-transcript.ts so that contract is provable without a DOM.
 
 import { useEffect, useRef, useState } from "react";
+import Markdown, { type Components } from "react-markdown";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { appendDelta, finishTurn, type ChatTurn } from "../lib/chat-transcript";
@@ -87,6 +88,39 @@ interface ChatChunk {
 // newer one.
 let nextTurnId = 0;
 let activeTurn: string | null = null;
+
+// Markdown rendering (T1): assistant ("stash") turns only — user turns stay
+// plain text. LLM output is untrusted, and two defaults here are load-bearing:
+//
+// 1. Raw HTML in the markdown is NOT rendered as HTML. react-markdown skips
+//    raw HTML nodes by default (they only become live DOM if you add
+//    rehype-raw, which this app deliberately does not depend on), so
+//    `<script>`, `<img onerror>` etc. in model output render as nothing.
+//    No dangerouslySetInnerHTML anywhere.
+// 2. Links never navigate the webview. The `a` override below preventDefaults
+//    every click and forwards the href to the Rust `open_external` command,
+//    which re-validates the scheme (http/https only) before spawning
+//    `/usr/bin/open` — so `javascript:`/`file:` hrefs die in Rust even if the
+//    markdown produces them. No target=_blank, no default anchor behaviour.
+const markdownComponents: Components = {
+  a({ href, children }) {
+    return (
+      <a
+        href={href}
+        onClick={(event) => {
+          event.preventDefault();
+          if (href !== undefined && href !== "") {
+            void invoke("open_external", { url: href }).catch((err) =>
+              console.error("open_external failed:", err),
+            );
+          }
+        }}
+      >
+        {children}
+      </a>
+    );
+  },
+};
 
 interface ChatViewProps {
   /** The session transcript, oldest first. Owned by App. */
@@ -224,10 +258,18 @@ export function ChatView({ turns, setTurns, session, setSession, onClose }: Chat
           turns.map((turn, i) => (
             <div key={i} className={`chat-turn chat-turn-${turn.role}`}>
               <span className="chat-role">{turn.role}</span>
-              <span className="chat-text">
-                {turn.text}
+              {/* A div, not a span: markdown yields block elements (p, pre,
+                  lists) that don't belong inside an inline element. */}
+              <div className="chat-text">
+                {turn.role === "stash" ? (
+                  // Re-rendering the growing string on every streamed delta is
+                  // fine at this scale; the final finishTurn text wins anyway.
+                  <Markdown components={markdownComponents}>{turn.text}</Markdown>
+                ) : (
+                  turn.text
+                )}
                 {turn.streaming === true && <span className="chat-caret">▍</span>}
-              </span>
+              </div>
             </div>
           ))
         )}
