@@ -1,6 +1,6 @@
 # Chat polish: markdown, clickable links, /clear
 
-Status: draft
+Status: done
 Source: v0.1.0 testing — chat responses render as plain text (markdown
 markup shows raw), URLs aren't clickable in the tasks list, and there is no
 way to start a fresh chat conversation (view-restore deliberately returns to
@@ -33,7 +33,7 @@ must be scheme-validated in Rust — a hostile link must not reach
 
 ### T1: Markdown rendering in chat + external link opener
 - Type: ship
-- Status: verified
+- Status: landed
 - Branch: anchor/chat-polish-t1
 - Escalation: required — new npm dependency (react-markdown, pinned).
 - Checkers: behavioral PASS / audit PASS — flags: informational only
@@ -60,8 +60,9 @@ must be scheme-validated in Rust — a hostile link must not reach
 
 ### T2: Clickable links in the tasks list
 - Type: ship
-- Status: todo
-- Branch: —
+- Status: landed
+- Checkers: behavioral PASS / audit PASS — flags: none
+- Branch: anchor/chat-polish-t2
 - Escalation: none
 - Blocked by: T1 (uses `open_external`).
 - Acceptance criteria:
