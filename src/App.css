@@ -517,6 +517,14 @@ body {
   white-space: nowrap;
 }
 
+/* Clickable URL inside a task title (T2 chat-polish): same link color token
+   as chat links, underlined so it reads as clickable inside a plain row. */
+.task-link {
+  color: var(--accent-knowledge);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .task-tag {
   flex: none;
 }

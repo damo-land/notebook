@@ -15,7 +15,9 @@
 // category filtering are client-side via src/lib/task-list.ts.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { deleteNote, isDeleteChord, listTasks, type IndexedNote } from "../lib/index-api";
+import { linkify } from "../lib/linkify";
 import { getVaultDir, updateNote } from "../lib/vault";
 import { homeDir, tauriVaultFs } from "../lib/vault-fs";
 import { openNote } from "../lib/note-editor-bus";
@@ -31,6 +33,43 @@ import {
 
 /** localStorage key for the persisted category filter (survives restarts). */
 const CATEGORY_STORAGE_KEY = "stash.tasks-view.category";
+
+/** Task title with http(s) URLs rendered as clickable links (T2 chat-polish).
+ *  Mirrors the chat view's `a` override: preventDefault so the webview never
+ *  navigates, hand the href to the Rust `open_external` command (which
+ *  re-validates http/https before spawning `open`). On top of that, in this
+ *  row context: mousedown preventDefault keeps focus on the list container
+ *  (same trick as the done ring) so Space/arrows keep working, and click
+ *  stopPropagation keeps the click from reaching any row/ancestor handlers —
+ *  a link click must not toggle the checkbox or move selection. */
+function TaskTitle({ title }: { title: string }) {
+  return (
+    <span className="task-title">
+      {linkify(title).map((segment, i) =>
+        segment.kind === "url" ? (
+          <a
+            key={i}
+            href={segment.text}
+            className="task-link"
+            tabIndex={-1}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              void invoke("open_external", { url: segment.text }).catch((err) =>
+                console.error("open_external failed:", err),
+              );
+            }}
+          >
+            {segment.text}
+          </a>
+        ) : (
+          <span key={i}>{segment.text}</span>
+        ),
+      )}
+    </span>
+  );
+}
 
 function loadStoredCategory(): string {
   try {
@@ -224,7 +263,7 @@ export function TasksView({ onClose }: TasksViewProps) {
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => void markDone(task)}
               />
-              <span className="task-title">{task.title || task.id}</span>
+              <TaskTitle title={task.title || task.id} />
               {task.tags.map((tag) => (
                 <span key={tag} className="chip task-tag">#{tag}</span>
               ))}
