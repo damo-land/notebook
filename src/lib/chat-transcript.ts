@@ -47,3 +47,54 @@ export function finishTurn(turns: ChatTurn[], text: string): ChatTurn[] {
   if (last === undefined || last.streaming !== true) return turns;
   return [...turns.slice(0, -1), { role: last.role, text }];
 }
+
+// --- /clear (chat-polish T3) -----------------------------------------------
+//
+// The chat input recognises exactly one command: the literal `/clear`,
+// submitted as the whole input. It resets the conversation — transcript
+// emptied, SDK session id dropped — so the next message starts a brand new
+// SDK session (chat_send goes up with `session: null` and an empty history).
+// The reset lives here, pure, so scripts/chat-clear-demo.ts can prove both
+// halves without a DOM.
+
+/** The one recognised chat command. */
+export const CLEAR_COMMAND = "/clear";
+
+/**
+ * True when the submitted input is the /clear command: the trimmed input is
+ * exactly `/clear`, nothing more. `/clear` with trailing text is NOT the
+ * command — it goes to the model as a normal message.
+ */
+export function isClearCommand(input: string): boolean {
+  return input.trim() === CLEAR_COMMAND;
+}
+
+/** The conversation state ChatView threads into every chat_send request. */
+export interface ChatConversation {
+  turns: ChatTurn[];
+  /** SDK session id of the conversation so far; null before the first turn. */
+  session: string | null;
+}
+
+/**
+ * The whole /clear reset: transcript emptied, session id dropped. Everything
+ * a chat_send request is built from comes out empty, so the turn after a
+ * clear carries no session to resume and no history to replay.
+ */
+export function clearConversation(_conversation: ChatConversation): ChatConversation {
+  return { turns: [], session: null };
+}
+
+/**
+ * The history replayed to the sidecar on each turn, derived from the
+ * transcript as it stood BEFORE the new turn's rows are appended: finished,
+ * non-empty turns only — a still-streaming answer or an error-emptied row is
+ * never part of the context. (The ollama provider has no server-side session,
+ * so this replay IS its continuity; the claude path uses `session` instead
+ * and ignores it.)
+ */
+export function historyFromTurns(turns: ChatTurn[]): { role: string; content: string }[] {
+  return turns
+    .filter((t) => t.streaming !== true && t.text !== "")
+    .map((t) => ({ role: t.role === "you" ? "user" : "assistant", content: t.text }));
+}

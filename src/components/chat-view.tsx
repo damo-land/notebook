@@ -28,7 +28,14 @@ import { useEffect, useRef, useState } from "react";
 import Markdown, { type Components } from "react-markdown";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { appendDelta, finishTurn, type ChatTurn } from "../lib/chat-transcript";
+import {
+  appendDelta,
+  clearConversation,
+  finishTurn,
+  historyFromTurns,
+  isClearCommand,
+  type ChatTurn,
+} from "../lib/chat-transcript";
 import { dismissOverlay, useFocusOnOverlayShown } from "../lib/overlay";
 import { aiDisabled } from "../lib/settings-flow";
 
@@ -192,9 +199,7 @@ export function ChatView({ turns, setTurns, session, setSession, onClose }: Chat
     // the sidecar's ollama provider has no server-side session, so continuity
     // is this replay of the full history each turn. The claude path keeps
     // using `session` (SDK resume) and ignores it.
-    const history = turns
-      .filter((t) => t.streaming !== true && t.text !== "")
-      .map((t) => ({ role: t.role === "you" ? "user" : "assistant", content: t.text }));
+    const history = historyFromTurns(turns);
     setTurns((prev) => [
       ...prev,
       { role: "you", text },
@@ -228,6 +233,19 @@ export function ChatView({ turns, setTurns, session, setSession, onClose }: Chat
       const text = draft.trim();
       if (text === "" || busy || aiOff) return; // no empty sends, no overlapping turns, no sends while AI is off
       setDraft("");
+      // `/clear`, submitted as the whole input, resets the conversation
+      // instead of going to the model: transcript emptied, SDK session id
+      // dropped — the next message starts a new SDK session. No chat_send is
+      // invoked. (`/clear` with trailing text is a normal message.) The reset
+      // itself is the pure clearConversation, proven in
+      // scripts/chat-clear-demo.ts; the emptied transcript also feeds App's
+      // restoreView (T3), so the next overlay open lands back on capture.
+      if (isClearCommand(text)) {
+        const cleared = clearConversation({ turns, session });
+        setTurns(cleared.turns);
+        setSession(cleared.session);
+        return;
+      }
       void send(text);
       return;
     }
@@ -253,7 +271,12 @@ export function ChatView({ turns, setTurns, session, setSession, onClose }: Chat
     <div className="chat-view">
       <div className="chat-transcript" role="log" aria-label="chat transcript">
         {turns.length === 0 ? (
-          <div className="tasks-empty">{aiOff ? AI_OFF_CHAT : "ask about your notes"}</div>
+          // The chat input has no slash-hint UI (the capture palette and
+          // inline menus are capture-only), so the empty state carries the
+          // one-line hint for the recognised /clear command.
+          <div className="tasks-empty">
+            {aiOff ? AI_OFF_CHAT : "ask about your notes — /clear resets the conversation"}
+          </div>
         ) : (
           turns.map((turn, i) => (
             <div key={i} className={`chat-turn chat-turn-${turn.role}`}>
