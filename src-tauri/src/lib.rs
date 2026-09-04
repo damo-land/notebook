@@ -1329,6 +1329,34 @@ fn claude_creds_keychain_present() -> bool {
         .unwrap_or(false)
 }
 
+/// Validation half of `open_external`, split out so it is unit-testable
+/// without spawning anything: only `http://`/`https://` URLs pass, the scheme
+/// matched case-insensitively; every other scheme (`javascript:`, `file:`,
+/// `data:`, …) and anything scheme-less is an error. Chat markdown comes from
+/// untrusted LLM output, so even if the webview is tricked into asking, a
+/// non-http(s) URL dies here in Rust before anything is opened.
+fn validate_external_url(url: &str) -> Result<(), String> {
+    let lower = url.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") {
+        Ok(())
+    } else {
+        Err(format!("refusing to open non-http(s) URL: {url}"))
+    }
+}
+
+/// Open a link from rendered chat markdown in the user's default browser
+/// (T1). Validates first — see `validate_external_url` — then hands the URL
+/// to macOS `open`, which routes it to the default handler for http(s).
+#[tauri::command]
+fn open_external(url: String) -> Result<(), String> {
+    validate_external_url(&url)?;
+    std::process::Command::new("/usr/bin/open")
+        .arg(&url)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("open failed: {e}"))
+}
+
 #[tauri::command]
 fn claude_creds_present(app: AppHandle) -> bool {
     let file = app
@@ -1678,6 +1706,7 @@ pub fn run() {
             home_dir,
             sidecar_ping,
             chat_send,
+            open_external,
             shoot_view,
             shoot_input,
             shoot_show_overlay
@@ -1932,5 +1961,30 @@ mod tests {
 
         std::fs::write(home.join(".claude/.credentials.json"), "{}").unwrap();
         assert!(claude_creds_file_present(&home));
+    }
+
+    /// The validation half of `open_external`, exercised without spawning
+    /// anything: only http/https URLs pass, scheme matched case-insensitively,
+    /// everything else is an error. LLM output is untrusted, so this
+    /// allowlist is the last line of defence for link hrefs from chat
+    /// markdown.
+    #[test]
+    fn open_external_url_validation() {
+        // Accepted: http/https, any case in the scheme.
+        assert!(validate_external_url("http://example.com").is_ok());
+        assert!(validate_external_url("https://example.com/a/b?q=1#frag").is_ok());
+        assert!(validate_external_url("HTTP://EXAMPLE.COM").is_ok());
+        assert!(validate_external_url("HtTpS://example.com").is_ok());
+
+        // Rejected: every other scheme, and things that aren't URLs at all.
+        assert!(validate_external_url("javascript:alert(1)").is_err());
+        assert!(validate_external_url("file:///etc/passwd").is_err());
+        assert!(validate_external_url("data:text/html,<h1>hi</h1>").is_err());
+        assert!(validate_external_url("ftp://example.com").is_err());
+        assert!(validate_external_url("mailto:x@example.com").is_err());
+        assert!(validate_external_url("example.com").is_err()); // scheme-less
+        assert!(validate_external_url("").is_err());
+        assert!(validate_external_url(" http://example.com").is_err()); // no leading junk
+        assert!(validate_external_url("httpx://example.com").is_err()); // prefix look-alike
     }
 }

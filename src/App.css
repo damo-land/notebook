@@ -603,6 +603,74 @@ body {
   color: var(--text-tertiary);
 }
 
+/* Markdown inside assistant turns (T1). Keep it in the transcript's type
+   scale — tighten the browser's document-sized defaults, nothing more. */
+.chat-text > *:first-child {
+  margin-top: 0;
+}
+
+.chat-text > *:last-child {
+  margin-bottom: 0;
+}
+
+.chat-text p,
+.chat-text ul,
+.chat-text ol,
+.chat-text blockquote {
+  margin: 0 0 8px;
+}
+
+.chat-text ul,
+.chat-text ol {
+  padding-left: 20px;
+}
+
+.chat-text h1,
+.chat-text h2,
+.chat-text h3,
+.chat-text h4,
+.chat-text h5,
+.chat-text h6 {
+  margin: 10px 0 6px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.chat-text code {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 13px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+  padding: 1px 4px;
+}
+
+.chat-text pre {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+  overflow-x: auto;
+}
+
+/* In a fenced block the <pre> handles the box; the inner <code> is bare and
+   its whitespace stays untouched (chat-text is pre-wrap, so `pre` here just
+   restates it against the anywhere-wrapping below). */
+.chat-text pre code {
+  background: none;
+  padding: 0;
+  white-space: pre;
+}
+
+.chat-text a {
+  color: var(--accent-knowledge);
+}
+
+.chat-text blockquote {
+  border-left: 2px solid var(--hairline);
+  padding-left: 10px;
+  color: var(--text-secondary);
+}
+
 /* In chat the input sits under the transcript, not above a result list, so
    the hairline flips to its top edge. */
 .chat-input {
