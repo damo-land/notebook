@@ -58,6 +58,7 @@ at a time), `/deadline` (`fri`, `2026-09-03`, `+3d`), `/category` (a tag).
 | `↑` / `↓` | Move selection |
 | `Enter` | Open the selected note in the editor |
 | `Space` | (Tasks) mark the selected task done |
+| `Ctrl Z` | (Tasks) undo the last completion, within 10 seconds |
 | `⌘⌫` | Delete the selected note — goes to the macOS Trash, recoverable |
 
 Search with an empty query lists every note, newest first; typing narrows.

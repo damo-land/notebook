@@ -1767,7 +1767,14 @@ pub fn run() {
                 let conn = conn.clone();
                 let vault_dir = vault_dir.clone();
                 let queue = queue.clone();
+                let app = app.handle().clone();
                 index::spawn_watcher(vault_dir.clone(), conn.clone(), move || {
+                    // Views holding an index read (the tasks list) refetch on
+                    // this, so an editor save shows up without a reopen.
+                    use tauri::Emitter;
+                    if let Err(e) = app.emit("index-updated", ()) {
+                        eprintln!("emit index-updated failed: {e}");
+                    }
                     // Read the CURRENT dir per dispatch: after a vault switch
                     // this queues the new vault's pending notes, not the old
                     // vault's.

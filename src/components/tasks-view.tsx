@@ -2,7 +2,11 @@
 //
 // Keys: Up/Down move selection; Space marks the selected task done (writes
 // `done: true` to frontmatter via the vault lib — the row is removed
-// optimistically, since the watcher reindexes within ~1s anyway); clicking
+// optimistically, since the watcher reindexes within ~1s anyway). Space
+// auto-repeat is ignored, so holding it completes one task, not a run of
+// them. Ctrl+Z within UNDO_GRACE_MS reverses the newest completion (restores
+// the original `done` on disk, row back in the list; see src/lib/task-undo.ts
+// — completions only, ⌘⌫ deletes go to the Trash instead); clicking
 // the empty ring at a row's left does the same via the same code path (T2,
 // Space kept but made discoverable); Enter opens
 // the note in the T7 editor; ⌘⌫ deletes the selected note (to the macOS
@@ -10,12 +14,16 @@
 // (tags present on open tasks + "all", persisted in localStorage); Esc goes
 // back to the capture view (overlay stays up); Ctrl+W hides the overlay.
 //
-// Fetch model: one `listTasks()` per mount (the component remounts whenever
-// the view is entered or the editor closes over it); done-filter, sorting and
+// Fetch model: `listTasks()` on mount (the component remounts whenever the
+// view is entered or the editor closes over it) and again on every
+// `index-updated` event (Rust emits it after each watcher reindex) — so an
+// edit saved in the editor shows up here once the index catches up, instead
+// of the remount fetch reading the pre-reindex row. Done-filter, sorting and
 // category filtering are client-side via src/lib/task-list.ts.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { deleteNote, isDeleteChord, listTasks, type IndexedNote } from "../lib/index-api";
 import { linkify } from "../lib/linkify";
 import { getVaultDir, updateNote } from "../lib/vault";
@@ -30,6 +38,10 @@ import {
   openTasks,
   sortByDeadline,
 } from "../lib/task-list";
+import { recordDone, restoreDonePatch, returnUndo, takeUndo, undoExpiresAt } from "../lib/task-undo";
+
+/** Rust emits this after every watcher-triggered reindex. */
+const INDEX_UPDATED_EVENT = "index-updated";
 
 /** localStorage key for the persisted category filter (survives restarts). */
 const CATEGORY_STORAGE_KEY = "stash.tasks-view.category";
@@ -101,19 +113,40 @@ export function TasksView({ onClose }: TasksViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const vaultDirRef = useRef<string | null>(null);
   const togglingRef = useRef(false);
+  /** When the "⌃Z undo" hint expires; null hides it. Seeded from the
+   *  module-level stack so it survives a remount inside the grace window. */
+  const [undoUntil, setUndoUntil] = useState<number | null>(() => undoExpiresAt());
+  /** Row just restored by undo, to move the selection onto. */
+  const [restoredId, setRestoredId] = useState<string | null>(null);
 
-  // One fetch per mount; the index is the read model.
+  // Fetch on mount and after every reindex; the index is the read model.
   useEffect(() => {
-    void (async () => {
+    let alive = true;
+    const fetchTasks = async () => {
       try {
-        setTasks(sortByDeadline(openTasks(await listTasks())));
+        const next = sortByDeadline(openTasks(await listTasks()));
+        if (alive) setTasks(next);
       } catch (err) {
         console.error("list tasks failed:", err);
       } finally {
-        setLoaded(true);
+        if (alive) setLoaded(true);
       }
-    })();
+    };
+    void fetchTasks();
+    const unlisten = listen(INDEX_UPDATED_EVENT, () => void fetchTasks());
+    return () => {
+      alive = false;
+      void unlisten.then((f) => f());
+    };
   }, []);
+
+  // Hide the undo hint when its window closes (re-checks the stack, so an
+  // older-but-still-live entry keeps it up).
+  useEffect(() => {
+    if (undoUntil === null) return;
+    const id = setTimeout(() => setUndoUntil(undoExpiresAt()), Math.max(undoUntil - Date.now(), 0));
+    return () => clearTimeout(id);
+  }, [undoUntil]);
 
   // Keyboard-only view: this list IS the primary input, so the container takes
   // focus on mount and on every reopen.
@@ -153,12 +186,51 @@ export function TasksView({ onClose }: TasksViewProps) {
       // watcher updates the index row within ~1s, so no refetch is needed.
       // Selection self-clamps: `selectedTask` derives via Math.min above.
       setTasks((prev) => prev.filter((t) => t.id !== task.id));
+      recordDone(task);
+      setUndoUntil(undoExpiresAt());
     } catch (err) {
       console.error("mark done failed:", err);
     } finally {
       togglingRef.current = false;
     }
   }, []);
+
+  /** Ctrl+Z: reverse the newest completion still inside the grace window —
+   *  restore the original `done` on disk, put the row back and select it. */
+  const undoDone = useCallback(async () => {
+    if (togglingRef.current) return;
+    const entry = takeUndo();
+    if (!entry) return;
+    togglingRef.current = true;
+    const { task } = entry;
+    try {
+      const vaultDir =
+        vaultDirRef.current ?? (await getVaultDir(tauriVaultFs, await homeDir()));
+      vaultDirRef.current = vaultDir;
+      await updateNote(tauriVaultFs, vaultDir, task.id, {
+        setFrontmatter: restoreDonePatch(task),
+      });
+      setTasks((prev) =>
+        sortByDeadline([...prev.filter((t) => t.id !== task.id), task]),
+      );
+      setRestoredId(task.id);
+    } catch (err) {
+      returnUndo(entry); // still undoable if the write failed
+      console.error("undo done failed:", err);
+    } finally {
+      setUndoUntil(undoExpiresAt());
+      togglingRef.current = false;
+    }
+  }, []);
+
+  // After an undo, move selection onto the restored row once it's in
+  // `visible` (it may be filtered out by the category — then leave it).
+  useEffect(() => {
+    if (restoredId === null) return;
+    const i = visible.findIndex((t) => t.id === restoredId);
+    if (i >= 0) setSelected(i);
+    setRestoredId(null);
+  }, [restoredId, visible]);
 
   /** ⌘⌫: delete the selected task's note — file to the macOS Trash, row out
    *  of the index (T4). Same optimistic-removal shape as markDone; shares its
@@ -190,7 +262,16 @@ export function TasksView({ onClose }: TasksViewProps) {
     }
     if (event.key === " ") {
       event.preventDefault();
+      // Held Space auto-repeats; each repeat would complete the next row the
+      // selection clamps onto. One press, one task.
+      if (event.repeat) return;
       if (selectedTask) void markDone(selectedTask);
+      return;
+    }
+    if (event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === "z") {
+      event.preventDefault();
+      if (event.repeat) return;
+      void undoDone();
       return;
     }
     if (event.key === "Enter") {
@@ -236,7 +317,10 @@ export function TasksView({ onClose }: TasksViewProps) {
     >
       <div className="tasks-header">
         <span className="tasks-title">tasks</span>
-        <span className="tasks-filter">#{category}</span>
+        <span className="tasks-filter">
+          {undoUntil !== null && <span className="tasks-undo-hint">⌃Z undo</span>}
+          #{category}
+        </span>
       </div>
       {visible.length === 0 ? (
         <div className="tasks-empty under-input">

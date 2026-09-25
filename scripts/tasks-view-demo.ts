@@ -4,7 +4,9 @@
 // {done: true}}) — flips `done` in the file's frontmatter on disk, including
 // for tasks captured without a `done` field; (2) the pure list helpers
 // (src/lib/task-list.ts): open-task filter, deadline-asc/nulls-last sort,
-// category derivation and Tab cycling.
+// category derivation and Tab cycling; (3) Ctrl+Z undo (src/lib/task-undo.ts):
+// grace-window pop order/expiry, and done -> undo round-trips `done` on disk
+// to its original shape (absent stays absent, explicit false stays false).
 
 import * as nodeFs from "node:fs/promises";
 import * as os from "node:os";
@@ -20,6 +22,13 @@ import {
   openTasks,
   sortByDeadline,
 } from "../src/lib/task-list";
+import {
+  UNDO_GRACE_MS,
+  popUndo,
+  pushUndo,
+  restoreDonePatch,
+  type UndoEntry,
+} from "../src/lib/task-undo";
 
 const fs: VaultFs = {
   readFile: (p) => nodeFs.readFile(p, "utf8"),
@@ -113,6 +122,38 @@ async function main() {
     ["late", "no-deadline-new"]
   );
   console.log("filter: tag filter narrows the sorted list");
+
+  // --- undo -----------------------------------------------------------------
+  // Grace window: newest-first inside it, nothing past it.
+  let stack: UndoEntry[] = [];
+  stack = pushUndo(stack, row({ id: "a" }), 1000);
+  stack = pushUndo(stack, row({ id: "b" }), 2000);
+  let popped = popUndo(stack, 3000);
+  assert.strictEqual(popped.entry?.task.id, "b");
+  popped = popUndo(popped.rest, 3000);
+  assert.strictEqual(popped.entry?.task.id, "a");
+  assert.strictEqual(popUndo(popped.rest, 3000).entry, null);
+  assert.strictEqual(popUndo(stack, 2000 + UNDO_GRACE_MS).entry, null, "expired entry popped");
+  assert.strictEqual(popUndo(stack, 1000 + UNDO_GRACE_MS).entry?.task.id, "b", "live entry lost");
+  console.log("undo: newest-first inside the grace window, nothing past it");
+
+  // Round-trip on disk: the exact write undo performs.
+  const bareUndo = await createNote(fs, vaultDir, { body: "# Water plants\n", kind: "task" });
+  const bareBefore = await nodeFs.readFile(bareUndo.path, "utf8");
+  await updateNote(fs, vaultDir, bareUndo.id, { setFrontmatter: { done: true } });
+  await updateNote(fs, vaultDir, bareUndo.id, {
+    setFrontmatter: restoreDonePatch(row({ id: bareUndo.id, done: null })),
+  });
+  assert.strictEqual(await nodeFs.readFile(bareUndo.path, "utf8"), bareBefore, "bare task not restored byte-for-byte");
+
+  const explicitUndo = await createNote(fs, vaultDir, { body: "# Book dentist\n", kind: "task", done: false });
+  const explicitBefore = await nodeFs.readFile(explicitUndo.path, "utf8");
+  await updateNote(fs, vaultDir, explicitUndo.id, { setFrontmatter: { done: true } });
+  await updateNote(fs, vaultDir, explicitUndo.id, {
+    setFrontmatter: restoreDonePatch(row({ id: explicitUndo.id, done: false })),
+  });
+  assert.strictEqual(await nodeFs.readFile(explicitUndo.path, "utf8"), explicitBefore, "done: false not restored");
+  console.log("undo: done -> undo restores the original frontmatter on disk");
 
   console.log("all checks passed");
 }

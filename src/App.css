@@ -713,3 +713,10 @@ body {
 .task-row-selected .task-done-ring {
   border-color: rgba(255, 255, 255, 0.55);
 }
+
+/* Transient "⌃Z undo" hint beside the category filter while a completion is
+   still undoable (src/lib/task-undo.ts grace window). */
+.tasks-undo-hint {
+  margin-right: 10px;
+  opacity: 0.7;
+}
