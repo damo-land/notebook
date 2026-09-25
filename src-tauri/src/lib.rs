@@ -884,7 +884,9 @@ fn needs_setup(app: AppHandle) -> Result<bool, String> {
         return Ok(false); // a harness/tool picked the vault explicitly
     }
     let home = app.path().home_dir().map_err(|e| e.to_string())?;
-    let configured = home.join(".config/stash/config.json").is_file();
+    // The vaultDir KEY, not the file: first-run provider detection has
+    // already written `{"llm": …}` by the time this runs.
+    let configured = index::vault_dir_configured(&home);
     let legacy = home.join(index::LEGACY_VAULT_DIR_NAME).is_dir();
     Ok(!configured && !legacy)
 }
@@ -1066,6 +1068,10 @@ struct Sidecar {
     /// Request id -> where its response line goes. Filled by `call`, drained
     /// by the stdout reader thread.
     pending: Mutex<HashMap<u64, mpsc::Sender<String>>>,
+    /// Why the spawn at app setup failed, if it did. `call` returns it in
+    /// place of a bare "sidecar not running", so the settings view can name
+    /// the actual cause (e.g. node missing) instead of guessing.
+    start_error: Mutex<Option<String>>,
 }
 
 impl Sidecar {
@@ -1078,7 +1084,13 @@ impl Sidecar {
         params: Option<serde_json::Value>,
     ) -> Result<mpsc::Receiver<String>, String> {
         let mut guard = self.proc.lock().map_err(|_| "sidecar state poisoned")?;
-        let proc = guard.as_mut().ok_or("sidecar not running")?;
+        let proc = guard.as_mut().ok_or_else(|| {
+            self.start_error
+                .lock()
+                .ok()
+                .and_then(|e| e.clone())
+                .unwrap_or_else(|| "sidecar not running".into())
+        })?;
         proc.next_id += 1;
         let id = proc.next_id;
 
@@ -1734,7 +1746,11 @@ pub fn run() {
                         next_id: 0,
                     });
                 }
-                Err(e) => eprintln!("[stash] sidecar failed to start: {e}"),
+                Err(e) => {
+                    eprintln!("[stash] sidecar failed to start: {e}");
+                    *sidecar.start_error.lock().unwrap() =
+                        Some(format!("sidecar failed to start: {e}"));
+                }
             }
 
             // SQLite index: db in app data dir (outside the vault), initial

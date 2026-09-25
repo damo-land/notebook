@@ -17,9 +17,9 @@
 // definitive result, then every 15s so external changes (daemon stopped,
 // token revoked) still surface. A rejected invoke means the SIDECAR is
 // unreachable — the sidecar boots asynchronously after app start — which is
-// NOT "unauthenticated"/"not running": it renders as "checking…" until the
-// first definitive result, and as "sidecar unreachable" if the sidecar drops
-// out later. The effect's cleanup clears every pending timer, so nothing
+// NOT "unauthenticated"/"not running": it renders as "checking…" through a
+// short boot grace, and as "sidecar unreachable" once that runs out or if the
+// sidecar drops out later — with the rejection's reason shown once below. The effect's cleanup clears every pending timer, so nothing
 // fires after the view unmounts.
 //
 // Save sequencing (T2 audit): set_vault_dir, set_llm_config and
@@ -33,7 +33,7 @@ import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { suggestVaultPath } from "../lib/obsidian-vaults";
-import { getVaultDir } from "../lib/vault";
+import { getVaultDir, readStoredConfig } from "../lib/vault";
 import { homeDir, tauriVaultFs } from "../lib/vault-fs";
 import { useFocusOnOverlayShown } from "../lib/overlay";
 import {
@@ -48,9 +48,11 @@ import {
   canSaveLlm,
   modelListing,
   nextField,
+  probeAfterFails,
   providerSelectable,
   savePlan,
   selectedModel,
+  settingsInitials,
   sidecarLiveness,
   withModel,
   withProvider,
@@ -83,7 +85,8 @@ interface OllamaStartResult {
  * (a resolved invoke) lands; a rejected invoke means the sidecar itself is
  * unreachable, which stays "pending" before any definitive result (the
  * sidecar is likely still booting) and becomes "unreachable" after one (the
- * sidecar dropped out — we can no longer say anything about the provider).
+ * sidecar dropped out — we can no longer say anything about the provider)
+ * or after SIDECAR_BOOT_FAILS rejections without one (it never came up).
  */
 type ProbeState<T> =
   | { kind: "pending" }
@@ -165,6 +168,10 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
   // feeds sidecarLiveness, so a sidecar that never comes up degrades the
   // status row to "sidecar down" — quietly, never a dialog.
   const [sidecarFails, setSidecarFails] = useState(0);
+  // The latest rejection's text (e.g. Rust's remembered spawn failure):
+  // shown once under both provider lines when the sidecar is down, so the
+  // one actionable fact isn't hidden behind "unreachable".
+  const [sidecarError, setSidecarError] = useState<string | null>(null);
   // The shape the settings-flow helpers take: null until a definitive probe.
   const ollamaProbe = ollamaState.kind === "done" ? ollamaState.value : null;
   // Start button (T2): busy from click until the daemon answers a re-probe
@@ -195,7 +202,9 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
 
   // Prefill. Wizard: the Obsidian-registry suggestion (unchanged from T6 —
   // see suggestVaultPath). Settings: the CONFIGURED state — current vault
-  // dir and saved llm config — so savePlan can tell what actually changed.
+  // dir and saved llm config. savePlan's baselines come from what the file
+  // actually HOLDS (settingsInitials), not these resolved defaults — else a
+  // never-saved field reads as unchanged and Enter writes nothing.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -212,11 +221,12 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
       }
       const dir = await getVaultDir(tauriVaultFs, home);
       const cfg = await invoke<{ provider: string; model: string }>("get_llm_config");
+      const initials = settingsInitials(await readStoredConfig(tauriVaultFs, home));
       if (cancelled) return;
       setPath(dir);
-      setInitialPath(dir);
+      setInitialPath(initials.initialVaultPath);
       setLlm(initialLlmChoice(cfg));
-      setInitialLlm(cfg);
+      setInitialLlm(initials.initialLlm);
     })().catch((err) => console.error("settings prefill failed:", err));
     return () => {
       cancelled = true;
@@ -280,12 +290,14 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
         if (!cancelled) {
           setClaudeProbe({ kind: "done", value: status });
           setSidecarFails(0);
+          setSidecarError(null);
         }
         return true;
-      } catch {
+      } catch (err) {
         if (!cancelled) {
           setClaudeProbe(sidecarDown);
           setSidecarFails((n) => n + 1);
+          setSidecarError(String(err));
         }
         return false;
       }
@@ -296,12 +308,14 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
         if (!cancelled) {
           setOllamaState({ kind: "done", value: probe });
           setSidecarFails(0);
+          setSidecarError(null);
         }
         return true;
-      } catch {
+      } catch (err) {
         if (!cancelled) {
           setOllamaState(sidecarDown);
           setSidecarFails((n) => n + 1);
+          setSidecarError(String(err));
         }
         return false;
       }
@@ -325,6 +339,16 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
       for (const t of timers) clearTimeout(t);
     };
   }, [aiVisible]);
+
+  // Past the boot grace, a sidecar that never answered is unreachable — the
+  // provider lines stop claiming "checking…" (probeAfterFails; the same
+  // threshold that turns the status row to "sidecar down").
+  useEffect(() => {
+    const flip = <T,>(prev: ProbeState<T>): ProbeState<T> =>
+      probeAfterFails(prev.kind, sidecarFails) !== prev.kind ? { kind: "unreachable" } : prev;
+    setClaudeProbe(flip);
+    setOllamaState(flip);
+  }, [sidecarFails]);
 
   // Wizard creds gate (T7): a DEFINITIVE "no Claude Code credentials" demotes
   // a claude selection to "none" so the select shows what a confirm would
@@ -538,7 +562,8 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
   // enable-hint copy, a live provider gets provider + model + the sidecar
   // verdict folded from both probes. Every sidecar/provider failure lands
   // here (and in the per-provider lines below), never in a dialog or toast.
-  const statusRow = aiStatusLine(llm, sidecarLiveness(claudeProbe.kind, ollamaState.kind, sidecarFails));
+  const liveness = sidecarLiveness(claudeProbe.kind, ollamaState.kind, sidecarFails);
+  const statusRow = aiStatusLine(llm, liveness);
 
   // "not authenticated" / "not running" render ONLY after a completed probe
   // that definitively said so. A sidecar that is down says exactly that —
@@ -715,6 +740,9 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
             </div>
             {ollamaDown && ollamaStartError !== null && (
               <div className="field-parse field-parse-bad">{ollamaStartError}</div>
+            )}
+            {liveness === "down" && sidecarError !== null && (
+              <div className="field-parse field-parse-bad">{sidecarError}</div>
             )}
           </div>
           <div className="field-editor">

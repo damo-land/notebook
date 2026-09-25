@@ -213,6 +213,41 @@ export async function listNotes(fs: VaultFs, vaultDir: string): Promise<NoteList
  */
 const LEGACY_VAULT_DIR_NAME = "Note" + "book";
 
+/** What `~/.config/stash/config.json` actually holds — no defaults. */
+export interface StoredConfig {
+  /** `~`-expanded, so it compares equal to what getVaultDir resolves. */
+  vaultDir?: string;
+  llm?: { provider: string; model: string };
+}
+
+/**
+ * Reads the keys the config file really contains. An absent key stays
+ * absent — unlike getVaultDir / get_llm_config, which fill in defaults — so
+ * the settings view can tell "never saved" from "saved as the default".
+ * Missing or malformed file -> `{}`.
+ */
+export async function readStoredConfig(fs: VaultFs, homeDir: string): Promise<StoredConfig> {
+  let cfg: unknown;
+  try {
+    cfg = JSON.parse(await fs.readFile(`${homeDir}/.config/stash/config.json`));
+  } catch {
+    return {};
+  }
+  if (typeof cfg !== "object" || cfg === null) return {};
+  const { vaultDir, llm } = cfg as { vaultDir?: unknown; llm?: unknown };
+  const out: StoredConfig = {};
+  if (typeof vaultDir === "string" && vaultDir) {
+    out.vaultDir = vaultDir.startsWith("~") ? homeDir + vaultDir.slice(1) : vaultDir;
+  }
+  if (typeof llm === "object" && llm !== null) {
+    const { provider, model } = llm as { provider?: unknown; model?: unknown };
+    if (typeof provider === "string" && typeof model === "string") {
+      out.llm = { provider, model };
+    }
+  }
+  return out;
+}
+
 /**
  * Resolves the vault dir: `~/.config/stash/config.json` `{ "vaultDir" }`
  * if present, else the pre-rename `<homeDir>/<legacy>` dir when it exists
@@ -220,17 +255,8 @@ const LEGACY_VAULT_DIR_NAME = "Note" + "book";
  * expands to homeDir.
  */
 export async function getVaultDir(fs: VaultFs, homeDir: string): Promise<string> {
-  try {
-    const raw = await fs.readFile(`${homeDir}/.config/stash/config.json`);
-    const cfg = JSON.parse(raw);
-    if (typeof cfg.vaultDir === "string" && cfg.vaultDir) {
-      return cfg.vaultDir.startsWith("~")
-        ? homeDir + cfg.vaultDir.slice(1)
-        : cfg.vaultDir;
-    }
-  } catch {
-    // missing or malformed config -> fall through
-  }
+  const { vaultDir } = await readStoredConfig(fs, homeDir);
+  if (vaultDir) return vaultDir;
   // Legacy fallback: keep using a pre-rename vault dir when it exists so the
   // rename never strands an existing vault. readdir doubles as the existence
   // probe — VaultFs has no stat.

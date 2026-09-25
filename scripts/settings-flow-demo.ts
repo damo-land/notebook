@@ -27,9 +27,11 @@ import {
   initialWizard,
   modelListing,
   nextField,
+  probeAfterFails,
   providerSelectable,
   savePlan,
   selectedModel,
+  settingsInitials,
   sidecarLiveness,
   withModel,
   withProvider,
@@ -271,6 +273,20 @@ import {
   assert.strictEqual(sidecarLiveness("pending", "pending", 0), "checking");
   assert.strictEqual(sidecarLiveness("pending", "pending", SIDECAR_BOOT_FAILS - 1), "checking");
   assert.strictEqual(sidecarLiveness("pending", "pending", SIDECAR_BOOT_FAILS), "down");
+
+  // Per-provider lines follow the same boot grace: a sidecar that never
+  // started leaves them "unreachable", not "checking…" forever — and never
+  // disagreeing with a "sidecar down" status row above them.
+  assert.strictEqual(probeAfterFails("pending", 0), "pending");
+  assert.strictEqual(probeAfterFails("pending", SIDECAR_BOOT_FAILS - 1), "pending");
+  assert.strictEqual(probeAfterFails("pending", SIDECAR_BOOT_FAILS), "unreachable");
+  assert.strictEqual(probeAfterFails("done", SIDECAR_BOOT_FAILS), "done");
+  assert.strictEqual(probeAfterFails("unreachable", 0), "unreachable");
+  for (const fails of [0, SIDECAR_BOOT_FAILS - 1, SIDECAR_BOOT_FAILS, SIDECAR_BOOT_FAILS + 5]) {
+    const line = probeAfterFails("pending", fails);
+    const row = sidecarLiveness(line, line, fails);
+    assert.strictEqual(line === "unreachable", row === "down", `fails=${fails}`);
+  }
 }
 
 // --- per-provider model memory: toggling back keeps the earlier pick ---------
@@ -456,6 +472,47 @@ assert.strictEqual(escCloses("settings"), true);
   assert.strictEqual(nextField(order, "autostart", 1), "vault"); // wraps forward
   assert.strictEqual(nextField(order, "vault", -1), "autostart"); // wraps back
   assert.strictEqual(nextField(order, "nope" as never, 1), "vault"); // unknown -> first
+}
+
+// --- settings initials come from what config.json HOLDS, not defaults ------
+// Enter on a never-saved machine must write the shown values out. Diffing
+// against resolved defaults (~/Stash, claude/haiku) made every field read
+// as unchanged, so the plan came out empty and nothing was written.
+
+{
+  const shownPath = "/home/u/Stash";
+  const shownLlm = initialLlmChoice({ provider: "none", model: "" });
+  const plan = (stored: Parameters<typeof settingsInitials>[0]) =>
+    savePlan({
+      ...settingsInitials(stored),
+      vaultPath: shownPath,
+      llm: shownLlm,
+      initialAutostart: false,
+      autostart: false,
+    }).map((a) => a.cmd);
+
+  // Fresh: no config file at all -> both written, vault first.
+  assert.deepStrictEqual(plan({}), ["set_vault_dir", "set_llm_config"]);
+  // Half: what first-run provider detection leaves -> vault only.
+  assert.deepStrictEqual(plan({ llm: { provider: "none", model: "" } }), ["set_vault_dir"]);
+  // Configured and untouched -> nothing.
+  assert.deepStrictEqual(
+    plan({ vaultDir: shownPath, llm: { provider: "none", model: "" } }),
+    []
+  );
+  // The old rule — initials seeded from the resolved (defaulted) values —
+  // is the bug: on the fresh machine it produced the empty plan.
+  assert.deepStrictEqual(
+    savePlan({
+      initialVaultPath: shownPath,
+      initialLlm: { provider: "none", model: "" },
+      vaultPath: shownPath,
+      llm: shownLlm,
+      initialAutostart: false,
+      autostart: false,
+    }),
+    []
+  );
 }
 
 console.log("settings-flow demo: all assertions passed");

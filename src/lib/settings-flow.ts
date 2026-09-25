@@ -206,6 +206,27 @@ export function sidecarLiveness(
   return consecutiveFails >= SIDECAR_BOOT_FAILS ? "down" : "checking";
 }
 
+/** One provider line's kind after `consecutiveFails` rejected probes. A
+ *  sidecar that never comes up rejects every probe forever; past the boot
+ *  grace the line must say "sidecar unreachable", not stay "checking…" — the
+ *  same threshold `sidecarLiveness` uses, so the lines and the status row
+ *  above them always agree. */
+export function probeAfterFails(kind: ProbeKind, consecutiveFails: number): ProbeKind {
+  return kind === "pending" && consecutiveFails >= SIDECAR_BOOT_FAILS ? "unreachable" : kind;
+}
+
+/** Settings-mode baselines for savePlan, from what config.json actually
+ *  HOLDS (readStoredConfig), never the resolved defaults. An absent key
+ *  means "never saved": "" / null, which savePlan already treats as changed
+ *  — so Enter on a fresh or half-configured machine writes the shown values
+ *  out instead of closing with nothing written. */
+export function settingsInitials(stored: {
+  vaultDir?: string;
+  llm?: { provider: string; model: string };
+}): { initialVaultPath: string; initialLlm: { provider: string; model: string } | null } {
+  return { initialVaultPath: stored.vaultDir ?? "", initialLlm: stored.llm ?? null };
+}
+
 /** The status row's text. Off → the exact enable-hint copy; claude/ollama →
  *  provider + model and the sidecar verdict. */
 export function aiStatusLine(choice: LlmChoice, sidecar: SidecarLiveness): string {

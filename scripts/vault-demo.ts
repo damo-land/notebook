@@ -12,6 +12,7 @@ import {
   updateNote,
   listNotes,
   getVaultDir,
+  readStoredConfig,
   type VaultFs,
 } from "../src/lib/vault";
 
@@ -38,6 +39,26 @@ async function main() {
   );
   assert.strictEqual(await getVaultDir(fs, fakeHome), `${fakeHome}/CustomVault`);
   console.log("getVaultDir: default + config override OK");
+
+  // readStoredConfig: only the keys the file holds, never defaults. This is
+  // what the settings view diffs against, so a fresh or half-configured
+  // machine reads as "nothing saved yet" rather than "saved as the default".
+  const storedHome = await nodeFs.mkdtemp(path.join(os.tmpdir(), "stash-home-"));
+  const cfgPath = `${storedHome}/.config/stash/config.json`;
+  assert.deepStrictEqual(await readStoredConfig(fs, storedHome), {}); // no file
+  await nodeFs.mkdir(`${storedHome}/.config/stash`, { recursive: true });
+  // What first-run provider detection leaves behind: llm only.
+  await nodeFs.writeFile(cfgPath, JSON.stringify({ llm: { provider: "none", model: "" } }));
+  assert.deepStrictEqual(await readStoredConfig(fs, storedHome), {
+    llm: { provider: "none", model: "" },
+  });
+  // vaultDir comes back ~-expanded, equal to what getVaultDir resolves.
+  await nodeFs.writeFile(cfgPath, JSON.stringify({ vaultDir: "~/V", llm: { provider: "ollama" } }));
+  assert.deepStrictEqual(await readStoredConfig(fs, storedHome), { vaultDir: `${storedHome}/V` });
+  assert.strictEqual(await getVaultDir(fs, storedHome), `${storedHome}/V`);
+  await nodeFs.writeFile(cfgPath, '{"vaultDir":');
+  assert.deepStrictEqual(await readStoredConfig(fs, storedHome), {}); // malformed
+  console.log("readStoredConfig: absent keys stay absent OK");
 
   // create
   const note = await createNote(fs, vaultDir, {

@@ -351,6 +351,24 @@ pub fn due_alerts(conn: &Connection, now: &str) -> Result<Vec<NoteRow>> {
 /// split literals so a repo-wide rename check doesn't match the old app name.
 pub const LEGACY_VAULT_DIR_NAME: &str = concat!("Note", "book");
 
+/// Whether the user has ever chosen a vault: `config.json` holds a non-empty
+/// `vaultDir`. The file merely existing is not enough — first-run provider
+/// detection writes `{"llm": …}` into it before the setup wizard's check
+/// runs. An existing but unparseable file counts as configured: hands off,
+/// the same rule `llm_config` applies, so the wizard can never clobber it.
+pub fn vault_dir_configured(home: &Path) -> bool {
+    let Ok(raw) = std::fs::read_to_string(home.join(".config/stash/config.json")) else {
+        return false;
+    };
+    match serde_json::from_str::<serde_json::Value>(&raw) {
+        Ok(json) => json
+            .get("vaultDir")
+            .and_then(|v| v.as_str())
+            .is_some_and(|d| !d.is_empty()),
+        Err(_) => true,
+    }
+}
+
 /// `~/.config/stash/config.json` `{ "vaultDir" }` if present, else the
 /// pre-rename `~/<legacy>` dir when it exists on disk, else `<home>/Stash`;
 /// a leading `~` expands to `home`.
@@ -473,7 +491,7 @@ fn watcher_reindex(conn: &Arc<Mutex<Connection>>, vault_dir: &Arc<Mutex<PathBuf>
 mod tests {
     use super::{
         list_all_notes, open_db, reindex, remove_note, resolve_vault_dir, search_notes,
-        watcher_reindex, LEGACY_VAULT_DIR_NAME,
+        vault_dir_configured, watcher_reindex, LEGACY_VAULT_DIR_NAME,
     };
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
@@ -752,5 +770,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(&plain);
         let _ = std::fs::remove_dir_all(&configured);
         let _ = std::fs::remove_dir_all(&legacy);
+    }
+
+    /// Only a non-empty `vaultDir` means the user chose a vault. The
+    /// `{"llm": …}` file first-run provider detection writes on a fresh
+    /// machine must NOT count — that was the wizard being skipped.
+    #[test]
+    fn vault_dir_configured_needs_the_key_not_the_file() {
+        let write = |name: &str, raw: Option<&str>| {
+            let home = scratch_home(name);
+            if let Some(raw) = raw {
+                std::fs::create_dir_all(home.join(".config/stash")).unwrap();
+                std::fs::write(home.join(".config/stash/config.json"), raw).unwrap();
+            }
+            home
+        };
+        let cases = [
+            ("vdc-absent", None, false),
+            (
+                "vdc-llm-only",
+                Some(r#"{"llm":{"provider":"none","model":""}}"#),
+                false,
+            ),
+            ("vdc-empty", Some(r#"{"vaultDir":""}"#), false),
+            ("vdc-set", Some(r#"{"vaultDir":"~/Vaults/work"}"#), true),
+            ("vdc-malformed", Some(r#"{"vaultDir":"#), true),
+        ];
+        for (name, raw, expected) in cases {
+            let home = write(name, raw);
+            assert_eq!(vault_dir_configured(&home), expected, "{name}");
+            let _ = std::fs::remove_dir_all(&home);
+        }
     }
 }
