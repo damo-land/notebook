@@ -25,14 +25,14 @@ import {
   fieldOrder,
   initialLlmChoice,
   initialWizard,
+  llmAutosave,
   modelListing,
   nextField,
   probeAfterFails,
   providerSelectable,
-  savePlan,
   selectedModel,
-  settingsInitials,
   sidecarLiveness,
+  vaultAutosave,
   withModel,
   withProvider,
   wizardConfirm,
@@ -313,88 +313,37 @@ import {
   assert.strictEqual(selectedModel(withProvider(o, "claude")), DEFAULT_CLAUDE_MODEL);
 }
 
-// --- settings save plan: only what changed, vault strictly before llm --------
+// --- settings auto-save: each change writes itself, no Enter ---------------
 
 {
-  const initial = {
-    initialVaultPath: "/v/old",
-    initialLlm: { provider: "claude", model: DEFAULT_CLAUDE_MODEL },
-    // Settings mode seeds the checkbox from get_autostart (live plugin
-    // state); false here stands in for "not currently enabled".
-    initialAutostart: false,
-  };
-  const llmUnchanged = initialLlmChoice(initial.initialLlm);
+  // Vault field commits (blur / Enter / Esc) only a real change.
+  assert.strictEqual(vaultAutosave("/v/old", "/v/old"), null); // untouched
+  assert.strictEqual(vaultAutosave("/v/old", "  /v/old  "), null); // whitespace only
+  assert.strictEqual(vaultAutosave("/v/old", "   "), null); // cleared: never saved
+  assert.deepStrictEqual(vaultAutosave("/v/old", " /v/new "), {
+    cmd: "set_vault_dir",
+    path: "/v/new",
+  });
+  // config.json without vaultDir (saved "" — first-run detection leaves only
+  // llm): the first commit writes the shown path out, so a never-saved vault
+  // does not stay implicit forever.
+  assert.deepStrictEqual(vaultAutosave("", "/home/u/Stash"), {
+    cmd: "set_vault_dir",
+    path: "/home/u/Stash",
+  });
 
-  // Nothing changed: nothing to save (Enter just closes) — an untouched
-  // autostart checkbox in particular does NOT re-call set_autostart.
-  // Design decision: settings mode saves autostart only when it changed.
+  // llm: a picked model saves at once; an unpicked one waits.
   assert.deepStrictEqual(
-    savePlan({ ...initial, vaultPath: "/v/old", llm: llmUnchanged, autostart: false }),
-    []
+    llmAutosave(initialLlmChoice({ provider: "claude", model: "claude-sonnet-5" })),
+    { cmd: "set_llm_config", provider: "claude", model: "claude-sonnet-5" }
   );
-
-  // Vault only.
-  assert.deepStrictEqual(
-    savePlan({ ...initial, vaultPath: "/v/new", llm: llmUnchanged, autostart: false }),
-    [{ cmd: "set_vault_dir", path: "/v/new" }]
-  );
-
-  // LLM only (model change).
-  const llmChanged = withModel(llmUnchanged, "claude-opus-5");
-  assert.deepStrictEqual(
-    savePlan({ ...initial, vaultPath: "/v/old", llm: llmChanged, autostart: false }),
-    [{ cmd: "set_llm_config", provider: "claude", model: "claude-opus-5" }]
-  );
-
-  // Autostart only: toggling the checkbox saves exactly one set_autostart
-  // with the new state — in both directions.
-  assert.deepStrictEqual(
-    savePlan({ ...initial, vaultPath: "/v/old", llm: llmUnchanged, autostart: true }),
-    [{ cmd: "set_autostart", enabled: true }]
-  );
-  assert.deepStrictEqual(
-    savePlan({ ...initial, initialAutostart: true, vaultPath: "/v/old", llm: llmUnchanged, autostart: false }),
-    [{ cmd: "set_autostart", enabled: false }]
-  );
-
-  // Everything changed: vault first, llm second, autostart last — the caller
-  // awaits each action in order, so no two config writers run concurrently.
-  assert.deepStrictEqual(
-    savePlan({ ...initial, vaultPath: "/v/new", llm: llmChanged, autostart: true }),
-    [
-      { cmd: "set_vault_dir", path: "/v/new" },
-      { cmd: "set_llm_config", provider: "claude", model: "claude-opus-5" },
-      { cmd: "set_autostart", enabled: true },
-    ]
-  );
-
-  // No saved llm yet (fresh config): a default-valued choice still saves once.
-  // But a null initialAutostart — the get_autostart probe unresolved or
-  // failed — is "no change" (audit fix 1): the checkbox is disabled until the
-  // probe seeds it, and an untouched box must NEVER emit a set_autostart, so
-  // a fast Enter or a failed probe cannot silently flip autostart.
-  assert.deepStrictEqual(
-    savePlan({
-      initialVaultPath: "/v/old",
-      initialLlm: null,
-      initialAutostart: null,
-      vaultPath: "/v/old",
-      llm: llmUnchanged,
-      autostart: false,
-    }),
-    [{ cmd: "set_llm_config", provider: "claude", model: DEFAULT_CLAUDE_MODEL }]
-  );
-
-  // Same with everything else unchanged: null initial → EMPTY plan, no
-  // set_autostart regardless of what the (disabled) checkbox state holds.
-  assert.deepStrictEqual(
-    savePlan({ ...initial, initialAutostart: null, vaultPath: "/v/old", llm: llmUnchanged, autostart: false }),
-    []
-  );
-  assert.deepStrictEqual(
-    savePlan({ ...initial, initialAutostart: null, vaultPath: "/v/old", llm: llmUnchanged, autostart: true }),
-    []
-  );
+  const unpicked = withProvider(initialLlmChoice(null), "ollama");
+  assert.strictEqual(llmAutosave(unpicked), null);
+  assert.deepStrictEqual(llmAutosave(withModel(unpicked, "qwen3:8b")), {
+    cmd: "set_llm_config",
+    provider: "ollama",
+    model: "qwen3:8b",
+  });
 }
 
 // --- provider "none" (the `--` off switch) ------------------------------------
@@ -423,17 +372,7 @@ import {
   assert.strictEqual(selectedModel(c), "");
   assert.strictEqual(canSaveLlm(c), true);
   assert.strictEqual(withModel(c, "x"), c); // no live model slot under none
-  assert.deepStrictEqual(
-    savePlan({
-      initialVaultPath: "/v/old",
-      initialLlm: { provider: "claude", model: "claude-sonnet-5" },
-      initialAutostart: false,
-      vaultPath: "/v/old",
-      llm: c,
-      autostart: false,
-    }),
-    [{ cmd: "set_llm_config", provider: "none", model: "" }]
-  );
+  assert.deepStrictEqual(llmAutosave(c), { cmd: "set_llm_config", provider: "none", model: "" });
 
   // Toggling back on: the earlier claude pick survived the off switch.
   assert.strictEqual(selectedModel(withProvider(c, "claude")), "claude-sonnet-5");
@@ -441,17 +380,6 @@ import {
   // A saved "none" config loads as none; nothing further to save.
   const saved = initialLlmChoice({ provider: "none", model: "" });
   assert.strictEqual(saved.provider, "none");
-  assert.deepStrictEqual(
-    savePlan({
-      initialVaultPath: "/v/old",
-      initialLlm: { provider: "none", model: "" },
-      initialAutostart: false,
-      vaultPath: "/v/old",
-      llm: saved,
-      autostart: false,
-    }),
-    []
-  );
 }
 
 // --- Esc rules: swallowed on first run, closes the settings view otherwise ---
@@ -472,47 +400,6 @@ assert.strictEqual(escCloses("settings"), true);
   assert.strictEqual(nextField(order, "autostart", 1), "vault"); // wraps forward
   assert.strictEqual(nextField(order, "vault", -1), "autostart"); // wraps back
   assert.strictEqual(nextField(order, "nope" as never, 1), "vault"); // unknown -> first
-}
-
-// --- settings initials come from what config.json HOLDS, not defaults ------
-// Enter on a never-saved machine must write the shown values out. Diffing
-// against resolved defaults (~/Stash, claude/haiku) made every field read
-// as unchanged, so the plan came out empty and nothing was written.
-
-{
-  const shownPath = "/home/u/Stash";
-  const shownLlm = initialLlmChoice({ provider: "none", model: "" });
-  const plan = (stored: Parameters<typeof settingsInitials>[0]) =>
-    savePlan({
-      ...settingsInitials(stored),
-      vaultPath: shownPath,
-      llm: shownLlm,
-      initialAutostart: false,
-      autostart: false,
-    }).map((a) => a.cmd);
-
-  // Fresh: no config file at all -> both written, vault first.
-  assert.deepStrictEqual(plan({}), ["set_vault_dir", "set_llm_config"]);
-  // Half: what first-run provider detection leaves -> vault only.
-  assert.deepStrictEqual(plan({ llm: { provider: "none", model: "" } }), ["set_vault_dir"]);
-  // Configured and untouched -> nothing.
-  assert.deepStrictEqual(
-    plan({ vaultDir: shownPath, llm: { provider: "none", model: "" } }),
-    []
-  );
-  // The old rule — initials seeded from the resolved (defaulted) values —
-  // is the bug: on the fresh machine it produced the empty plan.
-  assert.deepStrictEqual(
-    savePlan({
-      initialVaultPath: shownPath,
-      initialLlm: { provider: "none", model: "" },
-      vaultPath: shownPath,
-      llm: shownLlm,
-      initialAutostart: false,
-      autostart: false,
-    }),
-    []
-  );
 }
 
 console.log("settings-flow demo: all assertions passed");

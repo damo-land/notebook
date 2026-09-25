@@ -921,6 +921,12 @@ fn set_vault_dir(app: AppHandle, state: State<IndexState>, path: String) -> Resu
         return Err("vault path is empty".into());
     }
     let vault_dir = PathBuf::from(&expanded);
+    // A relative path would resolve against the app's cwd — some arbitrary
+    // directory — and settings saves the field on blur, so a half-typed
+    // path must be refused before it is persisted or created.
+    if !vault_dir.is_absolute() {
+        return Err(format!("vault path must start with / or ~ (got {path:?})"));
+    }
 
     // Read-modify-write via llm_config::update_config_json (atomic_write
     // underneath, like every other durable write here): config.json is the

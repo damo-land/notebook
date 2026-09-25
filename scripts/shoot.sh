@@ -39,7 +39,8 @@
 #                reopen, so the PNG is the proof — and any SHOOT_TEXT seeded
 #                beforehand is gone from it, because dismissal clears state.
 #                Give the run a longer SHOOT_SETTLE (say 5) so the capture
-#                happens after the cycle rather than during it.
+#                happens after the cycle rather than during it. A "\n" is
+#                pressed as the Enter key rather than inserted as text.
 #   SHOOT_LABEL  basename for the PNG and dev log, so repeated runs of one view
 #                with different text do not overwrite each other.
 #

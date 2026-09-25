@@ -7,15 +7,15 @@
 //                preselected claude / DEFAULT_CLAUDE_MODEL so Enter, Enter on
 //                a fresh machine saves the defaults and lands in capture. Esc
 //                is swallowed: there is nothing to fall back to.
-//   "settings" — tray → Settings…: both sections visible at once; Enter saves
-//                only what changed, Esc closes back to capture.
+//   "settings" — tray → Settings…: both sections visible at once; every
+//                change saves itself (selects/checkbox on change, the vault
+//                field on blur/Enter/Esc), Esc closes back to capture.
 //
 // Save sequencing is encoded here, not left to the component: set_vault_dir
 // and set_llm_config both read-modify-write the same config.json and must
 // NEVER run concurrently (set_autostart also merges into config.json), so
-// savePlan returns an ORDERED list (vault first, autostart last) the caller
-// awaits one action at a time, and the wizard yields an ordered list per
-// step, run the same way. Verified by scripts/settings-flow-demo.ts.
+// the wizard yields an ORDERED list per step the caller awaits one action at
+// a time, and settings auto-saves go through one serial queue in the view. Verified by scripts/settings-flow-demo.ts.
 
 import { CLAUDE_MODELS, DEFAULT_CLAUDE_MODEL } from "./llm-models";
 
@@ -215,18 +215,6 @@ export function probeAfterFails(kind: ProbeKind, consecutiveFails: number): Prob
   return kind === "pending" && consecutiveFails >= SIDECAR_BOOT_FAILS ? "unreachable" : kind;
 }
 
-/** Settings-mode baselines for savePlan, from what config.json actually
- *  HOLDS (readStoredConfig), never the resolved defaults. An absent key
- *  means "never saved": "" / null, which savePlan already treats as changed
- *  — so Enter on a fresh or half-configured machine writes the shown values
- *  out instead of closing with nothing written. */
-export function settingsInitials(stored: {
-  vaultDir?: string;
-  llm?: { provider: string; model: string };
-}): { initialVaultPath: string; initialLlm: { provider: string; model: string } | null } {
-  return { initialVaultPath: stored.vaultDir ?? "", initialLlm: stored.llm ?? null };
-}
-
 /** The status row's text. Off → the exact enable-hint copy; claude/ollama →
  *  provider + model and the sidecar verdict. */
 export function aiStatusLine(choice: LlmChoice, sidecar: SidecarLiveness): string {
@@ -274,7 +262,7 @@ export type SaveAction =
  *  the wizard's save-path backstop (T7): a claude choice without credentials
  *  saves provider "none" instead — claude must never be persisted from the
  *  wizard when no Claude Code credentials exist. The default `true` keeps
- *  settings-mode savePlan unchanged: there the dropdown already gates
+ *  settings-mode auto-save unchanged: there the dropdown already gates
  *  claude, and a persisted choice must round-trip as-is. */
 function llmSaveAction(choice: LlmChoice, claudeCreds: boolean | null = true): SaveAction {
   const gated =
@@ -326,33 +314,20 @@ export function wizardConfirm(
   };
 }
 
-/** Settings-mode Enter: only what changed, vault strictly first, autostart
- *  strictly last. The caller awaits each action before dispatching the next
- *  (the config-writing commands must never run concurrently). `initialLlm`
- *  null (no saved llm yet) counts as changed, so the first save writes the
- *  defaults out; `initialAutostart` null (get_autostart probe unresolved or
- *  FAILED) is the opposite — NO change, never a set_autostart: the view
- *  disables the checkbox until the probe seeds it, so an untouched box (or a
- *  fast Enter, or a failed probe) can never silently flip autostart. */
-export function savePlan(args: {
-  initialVaultPath: string;
-  vaultPath: string;
-  initialLlm: { provider: string; model: string } | null;
-  llm: LlmChoice;
-  initialAutostart: boolean | null;
-  autostart: boolean;
-}): SaveAction[] {
-  const plan: SaveAction[] = [];
-  if (args.vaultPath.trim() !== args.initialVaultPath.trim()) {
-    plan.push({ cmd: "set_vault_dir", path: args.vaultPath });
-  }
-  const llmChanged =
-    args.initialLlm === null ||
-    args.initialLlm.provider !== args.llm.provider ||
-    args.initialLlm.model !== selectedModel(args.llm);
-  if (llmChanged) plan.push(llmSaveAction(args.llm));
-  if (args.initialAutostart !== null && args.initialAutostart !== args.autostart) {
-    plan.push({ cmd: "set_autostart", enabled: args.autostart });
-  }
-  return plan;
+/** Settings auto-save, llm half: the write a provider/model change makes
+ *  as soon as it happens — or null while there is nothing savable yet (a
+ *  provider that needs a model with none picked, e.g. ollama with no models
+ *  pulled). Provider "none" saves with no model by design (AI off). */
+export function llmAutosave(choice: LlmChoice): SaveAction | null {
+  return canSaveLlm(choice) ? llmSaveAction(choice) : null;
+}
+
+/** Settings auto-save, vault half: the vault field commits on blur, Enter
+ *  or Esc — never per keystroke, since set_vault_dir re-points the running
+ *  app and reindexes. Writes only a non-empty path that differs from the
+ *  one config.json holds. `savedPath` is "" when config.json has no
+ *  vaultDir yet, so the first commit writes the shown path out. */
+export function vaultAutosave(savedPath: string, typed: string): SaveAction | null {
+  const path = typed.trim();
+  return path !== "" && path !== savedPath.trim() ? { cmd: "set_vault_dir", path } : null;
 }

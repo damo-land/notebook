@@ -359,21 +359,28 @@ function App() {
       // insert text — `insertText` goes to the caret of whatever holds DOM
       // focus and nowhere else, so nothing lands unless the reopen actually
       // restored focus. The seeded text is gone by then because the hide
-      // cleared it. Both criteria, one image.
+      // cleared it. Both criteria, one image. Settings skips the cycle: a
+      // dismissal returns it to capture, so it types straight into the
+      // focused field (how its Enter/Esc flows get driven unattended).
       await sleep(700);
-      await invoke("hide_overlay");
-      await sleep(400);
-      await invoke("shoot_show_overlay");
-      await sleep(400);
+      if (target !== "settings") {
+        await invoke("hide_overlay");
+        await sleep(400);
+        await invoke("shoot_show_overlay");
+        await sleep(400);
+      }
       // Typed per character, with a keydown dispatched ahead of each insert:
       // keydown-triggered UI (the T2 inline "/" menu) only exists for TYPED
       // text, so a bulk insertText would stage none of it. React's root
-      // listener picks the synthetic keydown up like a real one.
+      // listener picks the synthetic keydown up like a real one. A "\n" is
+      // pressed as Enter (keydown only, no text), so flows that confirm on
+      // Enter can be driven unattended.
       for (const ch of input.typed) {
+        const key = ch === "\n" ? "Enter" : ch;
         document.activeElement?.dispatchEvent(
-          new KeyboardEvent("keydown", { key: ch, bubbles: true, cancelable: true })
+          new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })
         );
-        document.execCommand("insertText", false, ch);
+        if (key !== "Enter") document.execCommand("insertText", false, ch);
       }
     })().catch((err) => console.error("shoot hook failed:", err));
   }, []);

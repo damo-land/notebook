@@ -10,7 +10,8 @@
 //
 //   settings (tray): header (icon, name, version from the build), the Vault
 //   section prefilled with the CONFIGURED path, and the AI section — all
-//   visible at once. Enter saves only what changed, Esc closes.
+//   visible at once. No confirm step: selects and the checkbox save on
+//   change, the vault field on blur/Enter/Esc; Esc closes.
 //
 // Probes poll while the AI section is open (settings-overhaul T1):
 // claude_auth_status and ollama_status re-fire every 4s until each returns a
@@ -24,10 +25,11 @@
 //
 // Save sequencing (T2 audit): set_vault_dir, set_llm_config and
 // set_autostart all read-modify-write config.json and must never run
-// concurrently. Both modes await their ordered action lists one at a time —
-// vault strictly first, autostart last ("Launch at login": wizard default
-// CHECKED and always saved on completion; settings seeded from the live
-// get_autostart and saved only when toggled).
+// concurrently. The wizard awaits its ordered action list one at a time —
+// vault strictly first, autostart last; settings auto-saves chain onto one
+// serial queue ("Launch at login": wizard default CHECKED and always saved
+// on completion; settings seeded from the live get_autostart and saved only
+// when toggled).
 
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -45,20 +47,21 @@ import {
   fieldOrder,
   initialLlmChoice,
   initialWizard,
+  llmAutosave,
   canSaveLlm,
   modelListing,
   nextField,
   probeAfterFails,
   providerSelectable,
-  savePlan,
   selectedModel,
-  settingsInitials,
   sidecarLiveness,
+  vaultAutosave,
   withModel,
   withProvider,
   wizardConfirm,
   type LlmChoice,
   type OllamaProbe,
+  type SaveAction,
   type ProviderId,
   type SettingsField,
   type WizardState,
@@ -142,17 +145,17 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
   // null until the prefill resolves, so a slow read never lets the user
   // confirm an empty path that a late prefill then overwrites.
   const [path, setPath] = useState<string | null>(null);
-  const [initialPath, setInitialPath] = useState("");
+  // Settings: the vaultDir config.json actually holds ("" = never saved);
+  // the vault field's commit compares against it (vaultAutosave).
+  const [savedPath, setSavedPath] = useState("");
   const [llm, setLlm] = useState<LlmChoice>(() => initialLlmChoice(null));
-  const [initialLlm, setInitialLlm] = useState<{ provider: string; model: string } | null>(null);
 
   // "Launch at login". Wizard: default CHECKED, so Enter-Enter enables it.
   // Settings: the box must never show a value that didn't come from the
   // get_autostart probe (live plugin state) — it starts UNCHECKED and
-  // DISABLED, the probe seeds both states, a failed probe leaves it disabled
-  // and puts the failure on the error line, and savePlan treats a null
-  // initial as "no change", so an untouched box (or a fast Enter before the
-  // probe lands) can never emit a set_autostart.
+  // DISABLED, the probe seeds both states, and a failed probe leaves it
+  // disabled with the failure on the error line. Only a user click on the
+  // enabled box saves, so it can never silently flip autostart.
   const [autostart, setAutostart] = useState(firstRun ? WIZARD_AUTOSTART_DEFAULT : false);
   const [initialAutostart, setInitialAutostart] = useState<boolean | null>(null);
   const autostartDisabled = mode === "settings" && initialAutostart === null;
@@ -182,6 +185,12 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
 
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  // Settings auto-save: every write chains onto this one promise, so the
+  // config.json writers (set_vault_dir / set_llm_config / set_autostart)
+  // never run concurrently however fast changes arrive.
+  const saveQueue = useRef<Promise<boolean>>(Promise.resolve(true));
+  // Brief "saved" in the hint after each auto-save lands.
+  const [justSaved, setJustSaved] = useState(false);
 
   const vaultRef = useRef<HTMLInputElement>(null);
   const providerRef = useRef<HTMLSelectElement>(null);
@@ -202,9 +211,9 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
 
   // Prefill. Wizard: the Obsidian-registry suggestion (unchanged from T6 —
   // see suggestVaultPath). Settings: the CONFIGURED state — current vault
-  // dir and saved llm config. savePlan's baselines come from what the file
-  // actually HOLDS (settingsInitials), not these resolved defaults — else a
-  // never-saved field reads as unchanged and Enter writes nothing.
+  // dir and saved llm config. The vault commit's baseline is what the file
+  // actually HOLDS (readStoredConfig), not the resolved default — else a
+  // never-saved vault would read as unchanged and never be written.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -221,12 +230,11 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
       }
       const dir = await getVaultDir(tauriVaultFs, home);
       const cfg = await invoke<{ provider: string; model: string }>("get_llm_config");
-      const initials = settingsInitials(await readStoredConfig(tauriVaultFs, home));
+      const stored = await readStoredConfig(tauriVaultFs, home);
       if (cancelled) return;
       setPath(dir);
-      setInitialPath(initials.initialVaultPath);
+      setSavedPath(stored.vaultDir ?? "");
       setLlm(initialLlmChoice(cfg));
-      setInitialLlm(initials.initialLlm);
     })().catch((err) => console.error("settings prefill failed:", err));
     return () => {
       cancelled = true;
@@ -363,7 +371,7 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
   // Settings only, ONCE per open: seed the checkbox from the LIVE plugin
   // state, not the stored config; until then it stays unchecked and
   // disabled. A failed probe leaves initialAutostart null (box disabled,
-  // savePlan skips it) and surfaces on the error line. The wizard keeps its
+  // so nothing can save it) and surfaces on the error line. The wizard keeps its
   // default-checked box instead — nothing is registered yet on first run.
   // Unlike the provider probes this must NOT poll: re-seeding would clobber
   // a toggle the user already made, so the ref guard (re-renders and
@@ -429,11 +437,9 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
     const opts = modelListing(p, ollamaProbe).options;
     if (selectedModel(next) === "" && opts.length > 0) next = withModel(next, opts[0]);
     setLlm(next);
+    if (!firstRun) void autosave(llmAutosave(next));
   };
 
-  /** Enter. Wizard: one save per step (vault → advance; ai → done).
-   *  Settings: the savePlan actions awaited ONE AT A TIME, vault first —
-   *  set_vault_dir and set_llm_config must never run concurrently. */
   /** One save action, awaited to completion before the caller dispatches the
    *  next — this sequencing is what keeps the two config.json writers apart. */
   const runAction = async (action: ReturnType<typeof wizardConfirm>["actions"][number]) => {
@@ -447,45 +453,57 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
     }
   };
 
+  /** Settings: queue one auto-save behind any still in flight. Resolves
+   *  true once it (and everything before it) landed; a failure shows on
+   *  the error line. null = nothing to save, resolves with the queue. */
+  const autosave = (action: SaveAction | null): Promise<boolean> => {
+    if (action === null) return saveQueue.current;
+    const run = saveQueue.current.then(async () => {
+      try {
+        await runAction(action);
+        if (action.cmd === "set_vault_dir") setSavedPath(action.path);
+        setError(null);
+        setJustSaved(true);
+        return true;
+      } catch (err) {
+        setError(String(err));
+        return false;
+      }
+    });
+    saveQueue.current = run;
+    return run;
+  };
+
+  useEffect(() => {
+    if (!justSaved) return;
+    const t = setTimeout(() => setJustSaved(false), 1500);
+    return () => clearTimeout(t);
+  }, [justSaved]);
+
+  /** The vault field's commit (blur / Enter / Esc) — never per keystroke:
+   *  set_vault_dir re-points the running app and reindexes. */
+  const commitVault = () => autosave(vaultAutosave(savedPath, path ?? ""));
+
+  /** Wizard Enter: one save per step (vault → advance; ai → done). */
   const confirm = async () => {
     if (saving) return;
     if (path === null || path.trim() === "") return;
     setSaving(true);
     setError(null);
     try {
-      if (firstRun) {
-        const { state: next, actions } = wizardConfirm(wizard, {
-          vaultPath: path,
-          llm,
-          autostart,
-          claudeCreds,
-        });
-        if (actions.some((a) => a.cmd === "set_llm_config") && !canSaveLlm(llm)) {
-          setError("pick a model first");
-          return;
-        }
-        for (const action of actions) await runAction(action);
-        setWizard(next);
-        if (next.done) onDone();
-        return;
-      }
-      const plan = savePlan({
-        initialVaultPath: initialPath,
+      const { state: next, actions } = wizardConfirm(wizard, {
         vaultPath: path,
-        initialLlm,
         llm,
-        initialAutostart,
         autostart,
+        claudeCreds,
       });
-      // Guard only a save that would actually write the llm config: a
-      // vault-only change must not be held hostage by an unpicked model.
-      // Provider "none" saves with no model by design (AI off).
-      if (plan.some((a) => a.cmd === "set_llm_config" && a.provider !== "none" && a.model === "")) {
+      if (actions.some((a) => a.cmd === "set_llm_config") && !canSaveLlm(llm)) {
         setError("pick a model first");
         return;
       }
-      for (const action of plan) await runAction(action);
-      onDone();
+      for (const action of actions) await runAction(action);
+      setWizard(next);
+      if (next.done) onDone();
     } catch (err) {
       setError(String(err));
     } finally {
@@ -495,17 +513,29 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key === "Enter") {
-      event.preventDefault();
-      void confirm();
+      // Wizard: confirm the step. Settings has nothing to confirm (every
+      // change saves itself); Enter in the vault field commits the path.
+      if (firstRun) {
+        event.preventDefault();
+        void confirm();
+      } else if (fieldOf(event.target) === "vault") {
+        event.preventDefault();
+        void commitVault();
+      }
       return;
     }
     if (event.key === "Escape") {
       // preventDefault keeps the global keymap (which hides the window) out
       // of it — on first run Esc must do nothing at all: there is no vault
-      // to fall back to, so the wizard stays up.
+      // to fall back to, so the wizard stays up. Settings: land any pending
+      // vault edit first; a failed save keeps the view up with its error.
       event.preventDefault();
       event.stopPropagation();
-      if (escCloses(mode)) onClose();
+      if (escCloses(mode)) {
+        void commitVault().then((ok) => {
+          if (ok) onClose();
+        });
+      }
       return;
     }
     if (event.key === "Tab") {
@@ -603,7 +633,9 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
     ? wizard.step === "vault"
       ? "choose where stash keeps your notes — Enter confirms"
       : "pick your AI — Enter confirms, defaults are fine"
-    : "Enter saves, Esc cancels";
+    : justSaved
+      ? "saved — Esc closes"
+      : "changes save automatically — Esc closes";
 
   return (
     <div className="setup-view" onKeyDown={onKeyDown}>
@@ -623,6 +655,9 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
             className="field-input"
             value={path ?? ""}
             onChange={(e) => setPath(e.target.value)}
+            onBlur={() => {
+              if (!firstRun) void commitVault();
+            }}
             placeholder="path to your vault folder"
             autoFocus
             spellCheck={false}
@@ -665,7 +700,11 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
                 ref={modelRef}
                 className="settings-select"
                 value={selectedModel(llm)}
-                onChange={(e) => setLlm(withModel(llm, e.target.value))}
+                onChange={(e) => {
+                  const next = withModel(llm, e.target.value);
+                  setLlm(next);
+                  if (!firstRun) void autosave(llmAutosave(next));
+                }}
                 aria-label="ai model"
               >
                 {listing.options.map((m) => (
@@ -753,7 +792,11 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
                 type="checkbox"
                 checked={autostart}
                 disabled={autostartDisabled}
-                onChange={(e) => setAutostart(e.target.checked)}
+                onChange={(e) => {
+                  const enabled = e.target.checked;
+                  setAutostart(enabled);
+                  if (!firstRun) void autosave({ cmd: "set_autostart", enabled });
+                }}
                 aria-label="launch at login"
               />
               Launch at login
