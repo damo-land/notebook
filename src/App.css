@@ -5,29 +5,79 @@
 }
 
 /* --- T4 visual language --------------------------------------------------
-   The window material (T2's HudWindow vibrancy) is the only surface. Nothing
-   in here paints an opaque background: hierarchy comes from text opacity and
-   size, separation comes from spacing and hairlines, and the sole fill
-   anywhere is the selection highlight. Three sizes, one family:
+   The window material (T2's vibrancy) is the only surface. Nothing in here
+   paints an opaque background: hierarchy comes from text opacity and size,
+   separation comes from spacing and hairlines, and the sole fill anywhere is
+   the selection highlight. Three sizes, one family:
 
      22px  primary input (capture / search / chat)
      15px  content rows, chat text, editor body
      12px  metadata — headers, dates, tags, roles
 
-   Colours are white at varying alpha so they sit on the vibrancy rather
-   than on top of it. */
+   Appearance, Spotlight-style. The native material follows the system
+   appearance (light grey in light mode, dark in dark mode), so every colour
+   here is a token with two values: white-at-alpha over the dark material,
+   black-at-alpha over the light one — the web analogue of AppKit's semantic
+   labelColor / secondaryLabelColor / tertiaryLabelColor, whose alphas these
+   track. The accents get darker, more saturated light-mode counterparts; the
+   dark-mode pastels wash out on a light material.
+
+   --surface-tint is the one deliberate exception to "no fill": a
+   translucent wash over the material (on #root) that adds density, so a
+   bright or busy wallpaper behind the panel cannot drag the contrast down.
+   Spotlight's own panel is similarly dense. It is translucent, so the blur
+   still reads through it. */
 :root {
+  color-scheme: light dark;
   --font-system:
     -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
-  --text-primary: rgba(255, 255, 255, 0.96);
-  --text-secondary: rgba(255, 255, 255, 0.55);
-  --text-tertiary: rgba(255, 255, 255, 0.35);
+  --surface-tint: rgba(22, 22, 24, 0.42);
+  /* Inner edge highlight. macOS draws a 1px dark contour around every
+     window in dark mode; on its own, over a bright wallpaper, that reads as
+     a heavy black outline. AppKit's own dark windows and Spotlight pair it
+     with a faint light hairline just inside, so the edge reads as a crisp
+     bevel instead. Light mode's system contour is already a soft grey. */
+  --panel-edge: rgba(255, 255, 255, 0.14);
+  --text-primary: rgba(255, 255, 255, 0.92);
+  --text-secondary: rgba(255, 255, 255, 0.6);
+  --text-tertiary: rgba(255, 255, 255, 0.4);
   --hairline: rgba(255, 255, 255, 0.1);
   --selection: rgba(255, 255, 255, 0.14);
+  /* quiet control chrome: selects, buttons, inline code */
+  --fill: rgba(255, 255, 255, 0.07);
+  --fill-hover: rgba(255, 255, 255, 0.12);
+  --fill-muted: rgba(255, 255, 255, 0.04);
+  --ring: rgba(255, 255, 255, 0.3);
+  --ring-strong: rgba(255, 255, 255, 0.55);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.28);
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath d='M1 1l3 3 3-3' fill='none' stroke='rgba(255,255,255,0.6)' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   --accent-task: #eec078;
   --accent-knowledge: #7cc4ee;
   --accent-bad: #ee8c8c;
   --accent-ok: #8cd48c;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --surface-tint: rgba(250, 250, 252, 0.5);
+    --panel-edge: rgba(255, 255, 255, 0.5);
+    --text-primary: rgba(0, 0, 0, 0.85);
+    --text-secondary: rgba(0, 0, 0, 0.55);
+    --text-tertiary: rgba(0, 0, 0, 0.38);
+    --hairline: rgba(0, 0, 0, 0.1);
+    --selection: rgba(0, 0, 0, 0.08);
+    --fill: rgba(0, 0, 0, 0.05);
+    --fill-hover: rgba(0, 0, 0, 0.09);
+    --fill-muted: rgba(0, 0, 0, 0.03);
+    --ring: rgba(0, 0, 0, 0.28);
+    --ring-strong: rgba(0, 0, 0, 0.5);
+    --scrollbar-thumb: rgba(0, 0, 0, 0.25);
+    --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath d='M1 1l3 3 3-3' fill='none' stroke='rgba(0,0,0,0.55)' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    --accent-task: #a8650a;
+    --accent-knowledge: #1769aa;
+    --accent-bad: #c0392b;
+    --accent-ok: #2a7d38;
+  }
 }
 
 /* Deliberately NOT `height: 100%`. The window's height is driven from the
@@ -41,7 +91,8 @@ body,
   height: auto;
   /* Transparent all the way down: any opaque layer here would paint over the
      window's native vibrancy material (T2) and the overlay would read as a
-     flat grey page again. */
+     flat grey page again. The translucent --surface-tint lives on #root,
+     where the 12px clip keeps it inside the material's rounded shape. */
   background: transparent;
 }
 
@@ -73,6 +124,8 @@ body {
 #root {
   border-radius: 12px;
   overflow: clip;
+  background: var(--surface-tint);
+  box-shadow: inset 0 0 0 1px var(--panel-edge);
 }
 
 .overlay {
@@ -126,7 +179,7 @@ body {
 }
 
 .overlay ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.28);
+  background: var(--scrollbar-thumb);
   border-radius: 999px;
 }
 
@@ -318,10 +371,17 @@ body {
   padding: 10px 12px;
 }
 
+/* The app icon is a white silhouette on transparency, so it is drawn as a
+   mask — only its shape is used, filled with the primary text colour — and
+   follows the appearance like the text does (dark glyph in light mode). The
+   same idea as the tray's template image (src-tauri/src/lib.rs). */
 .settings-icon {
+  flex: none;
   width: 28px;
   height: 28px;
-  border-radius: 6px;
+  background-color: var(--text-primary);
+  -webkit-mask: var(--settings-icon-src) center / contain no-repeat;
+  mask: var(--settings-icon-src) center / contain no-repeat;
 }
 
 .settings-name {
@@ -349,8 +409,8 @@ body {
   font-family: var(--font-system);
   font-size: 13px;
   color: var(--text-primary);
-  background-color: rgba(255, 255, 255, 0.07);
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath d='M1 1l3 3 3-3' fill='none' stroke='rgba(255,255,255,0.55)' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-color: var(--fill);
+  background-image: var(--select-chevron);
   background-repeat: no-repeat;
   background-position: right 9px center;
   border: 1px solid var(--hairline);
@@ -360,7 +420,7 @@ body {
 }
 
 .settings-select:hover {
-  background-color: rgba(255, 255, 255, 0.1);
+  background-color: var(--fill-hover);
 }
 
 /* Keyboard-first: the focused field must be visible while Tab cycles. */
@@ -379,7 +439,7 @@ body {
   font-family: var(--font-system);
   font-size: 11px;
   color: var(--text-primary);
-  background: rgba(255, 255, 255, 0.07);
+  background: var(--fill);
   border: 1px solid var(--hairline);
   border-radius: 5px;
   padding: 2px 9px;
@@ -387,12 +447,12 @@ body {
 }
 
 .settings-btn:hover {
-  background: rgba(255, 255, 255, 0.12);
+  background: var(--fill-hover);
 }
 
 .settings-btn:disabled {
   color: var(--text-tertiary);
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--fill-muted);
   cursor: default;
 }
 
@@ -439,7 +499,7 @@ body {
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
   font-size: 11px;
   color: var(--text-primary);
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--fill);
   border-radius: 4px;
   padding: 1px 5px;
 }
@@ -647,7 +707,7 @@ body {
 .chat-text code {
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
   font-size: 13px;
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--fill);
   border-radius: 3px;
   padding: 1px 4px;
 }
@@ -655,7 +715,7 @@ body {
 .chat-text pre {
   margin: 0 0 8px;
   padding: 8px 10px;
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--fill-muted);
   border-radius: 4px;
   overflow-x: auto;
 }
@@ -703,7 +763,7 @@ body {
   width: 15px;
   height: 15px;
   border-radius: 50%;
-  border: 1px solid rgba(255, 255, 255, 0.3);
+  border: 1px solid var(--ring);
   background: transparent;
   padding: 0;
   cursor: pointer;
@@ -711,7 +771,7 @@ body {
 
 .task-done-ring:hover,
 .task-row-selected .task-done-ring {
-  border-color: rgba(255, 255, 255, 0.55);
+  border-color: var(--ring-strong);
 }
 
 /* Transient "⌃Z undo" hint beside the category filter while a completion is

@@ -81,6 +81,9 @@ fn show_overlay(app: &AppHandle) {
     };
     place_overlay_on_cursor_display(app);
     panel.show_and_make_key();
+    // Placement may have moved/resized the panel while hidden; refresh the
+    // cached shadow outline (see resize_overlay).
+    panel.as_panel().invalidateShadow();
     log_key_window_status(panel.as_ref());
     log_key_window_status_delayed(app, Duration::from_millis(300));
     emit_overlay_shown(app);
@@ -436,6 +439,19 @@ fn resize_overlay(app: AppHandle, height: f64) -> Result<f64, String> {
     window
         .set_size(tauri::LogicalSize::new(width, clamped))
         .map_err(|e| e.to_string())?;
+    // A transparent window's shadow is not recomputed on a frame change:
+    // AppKit derives it once from the window's alpha mask (here, the rounded
+    // vibrancy material) and keeps that cached outline. Without this the
+    // panel grows/shrinks with its content but the shadow rim keeps the old
+    // shape — a dark outline that runs past or stops short of the rounded
+    // corners. Queued after set_size on the main thread, so it sees the new
+    // frame.
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Ok(panel) = handle.get_webview_panel(OVERLAY_WINDOW_LABEL) {
+            panel.as_panel().invalidateShadow();
+        }
+    });
     if shoot_view_env().is_some() {
         eprintln!("[shoot] resize_overlay: requested {height:.1} pt -> applied {clamped:.1} pt");
     }
@@ -1831,6 +1847,12 @@ pub fn run() {
             let menu = Menu::with_items(app, &[&settings, &quit])?;
             TrayIconBuilder::with_id("stash-tray")
                 .icon(app.default_window_icon().expect("default window icon").clone())
+                // The icon art is a white silhouette on transparency. As a
+                // template image macOS uses only its alpha and tints it to
+                // the menu bar itself — dark on a light bar, light on a dark
+                // one — the way every native menu bar extra does. Without
+                // this the white glyph vanishes on a light menu bar.
+                .icon_as_template(true)
                 .menu(&menu)
                 .on_menu_event(|app, event| {
                     if event.id() == "settings" {
@@ -1848,11 +1870,16 @@ pub fn run() {
 
             // Native macOS material behind the webview.
             //
-            // HudWindow is the material the system's own HUD panels use: dark,
-            // heavily blurred, and legible over any wallpaper — the closest
-            // stock match for a Spotlight-style overlay. The lighter materials
-            // (Sidebar, Popover, HeaderView) read as document chrome, and
-            // UnderWindowBackground is tuned for a full window behind content.
+            // Popover is the material, chosen to match Spotlight: it follows
+            // the system appearance (dark in dark mode, light grey in light
+            // mode) and is dense enough that a bright or busy wallpaper does
+            // not wash out the text. HudWindow, used before, also flips light
+            // in light mode but is thin — over a white window it read as
+            // mid-grey with white text on it. The CSS colour tokens in
+            // src/App.css have a light and a dark value to match whichever
+            // appearance the material is drawing, plus a translucent tint on
+            // #root for extra density. Going native (not an opaque CSS fill)
+            // also keeps Reduce Transparency / Increase Contrast working.
             //
             // `NSVisualEffectState::Active` rather than the default
             // FollowsWindowActiveState: an overlay that flattens to plain grey
@@ -1870,11 +1897,11 @@ pub fn run() {
             // CSS nor the reverse.
             if let Err(e) = window_vibrancy::apply_vibrancy(
                 &window,
-                window_vibrancy::NSVisualEffectMaterial::HudWindow,
+                window_vibrancy::NSVisualEffectMaterial::Popover,
                 Some(window_vibrancy::NSVisualEffectState::Active),
                 Some(12.0),
             ) {
-                eprintln!("[stash] vibrancy (HudWindow) not applied: {e}");
+                eprintln!("[stash] vibrancy (Popover) not applied: {e}");
             }
 
             // Convert the main window into a floating NSPanel.

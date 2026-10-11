@@ -31,7 +31,7 @@
 // on completion; settings seeded from the live get_autostart and saved only
 // when toggled).
 
-import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { suggestVaultPath } from "../lib/obsidian-vaults";
@@ -641,7 +641,11 @@ export function SetupView({ firstRun, onVaultApplied, onDone, onClose }: SetupVi
     <div className="setup-view" onKeyDown={onKeyDown}>
       {mode === "settings" && (
         <div className="settings-header">
-          <img className="settings-icon" src={appIcon} alt="" />
+          <span
+            className="settings-icon"
+            style={{ "--settings-icon-src": `url(${appIcon})` } as CSSProperties}
+            aria-hidden="true"
+          />
           <span className="settings-name">stash</span>
           <span className="settings-version">{version === "" ? "" : `v${version}`}</span>
         </div>
