@@ -51,3 +51,14 @@ Spotlight-style personal note capture + knowledge vault. Resident overlay
   over vault first; holo-style persona is fast-follow.
 - 2026-08-28: Tauri v2 + TS over Swift — TS fluency + UI iteration speed on
   the morphing editor outweigh last ~5% of native overlay feel.
+- 2026-10-11: Mobile reversed back in (cut 2026-08-28): native SwiftUI iPhone
+  companion in `ios/` — read/search, task done-toggle, capture. Sync = vault
+  folder in plain iCloud Drive (phone picks it once, security-scoped
+  bookmark); Supabase rejected (Mac-side sync engine + second source of
+  truth). Swift `StashCore` ports `src/lib/vault` byte-for-byte, checked by
+  golden files the TS lib generates. Spec: docs/specs/2026-10-11-ios-companion.md
+- 2026-10-11: iPhone gets chat after all (reverses the iOS spec's "no
+  on-device AI" non-goal): Apple Foundation Models, on-device, offline, iOS 26
+  + Apple Intelligence only; hidden elsewhere. Tools mirror the MCP server
+  (search / read / open tasks) with outputs sized for the ~4k-token window.
+  Enrichment stays Mac-only. iOS nav is Tasks | Notes | Knowledge (no tab bar).

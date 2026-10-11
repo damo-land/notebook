@@ -1,0 +1,430 @@
+{
+  "timeZone": "Europe/London",
+  "create": [
+    {
+      "now": "2026-10-09T21:24:36.704Z",
+      "existing": [],
+      "input": {
+        "body": "talk to Triss about an agency",
+        "kind": "task"
+      },
+      "id": "20261009-222436-talk-to-triss-about-an-agency",
+      "file": "---\nid: 20261009-222436-talk-to-triss-about-an-agency\ncreated: 2026-10-09T21:24:36.704Z\nkind: task\ntags: []\n---\ntalk to Triss about an agency"
+    },
+    {
+      "now": "2026-01-15T08:00:00.000Z",
+      "existing": [],
+      "input": {
+        "body": "Hello world"
+      },
+      "id": "20260115-080000-hello-world",
+      "file": "---\nid: 20260115-080000-hello-world\ncreated: 2026-01-15T08:00:00.000Z\nkind: note\ntags: []\n---\nHello world"
+    },
+    {
+      "now": "2026-10-09T23:30:00.123Z",
+      "existing": [],
+      "input": {
+        "body": "midnight crossing",
+        "kind": "knowledge"
+      },
+      "id": "20261010-003000-midnight-crossing",
+      "file": "---\nid: 20261010-003000-midnight-crossing\ncreated: 2026-10-09T23:30:00.123Z\nkind: knowledge\ntags: []\n---\nmidnight crossing"
+    },
+    {
+      "now": "2026-09-25T18:09:53.001Z",
+      "existing": [],
+      "input": {
+        "body": "test copilot agent for slides planning p\nsecond line",
+        "kind": "task",
+        "tags": [
+          "work",
+          "ai"
+        ],
+        "deadline": "2026-09-26"
+      },
+      "id": "20260925-190953-test-copilot-agent-for-slides-planning-p",
+      "file": "---\nid: 20260925-190953-test-copilot-agent-for-slides-planning-p\ncreated: 2026-09-25T18:09:53.001Z\nkind: task\ntags: [work, ai]\ndeadline: 2026-09-26\n---\ntest copilot agent for slides planning p\nsecond line"
+    },
+    {
+      "now": "2026-03-01T12:00:00.000Z",
+      "existing": [],
+      "input": {
+        "body": "  --Hello, World!!--  ",
+        "kind": "note"
+      },
+      "id": "20260301-120000-hello-world",
+      "file": "---\nid: 20260301-120000-hello-world\ncreated: 2026-03-01T12:00:00.000Z\nkind: note\ntags: []\n---\n  --Hello, World!!--  "
+    },
+    {
+      "now": "2026-03-01T12:00:00.000Z",
+      "existing": [],
+      "input": {
+        "body": "a very long first line that will be cut exactly at forty characters - ok"
+      },
+      "id": "20260301-120000-a-very-long-first-line-that-will-be-cut",
+      "file": "---\nid: 20260301-120000-a-very-long-first-line-that-will-be-cut\ncreated: 2026-03-01T12:00:00.000Z\nkind: note\ntags: []\n---\na very long first line that will be cut exactly at forty characters - ok"
+    },
+    {
+      "now": "2026-03-01T12:00:00.000Z",
+      "existing": [],
+      "input": {
+        "body": "abcdefghijklmnopqrstuvwxyz0123456789abc-defgh"
+      },
+      "id": "20260301-120000-abcdefghijklmnopqrstuvwxyz0123456789abc",
+      "file": "---\nid: 20260301-120000-abcdefghijklmnopqrstuvwxyz0123456789abc\ncreated: 2026-03-01T12:00:00.000Z\nkind: note\ntags: []\n---\nabcdefghijklmnopqrstuvwxyz0123456789abc-defgh"
+    },
+    {
+      "now": "2026-03-01T12:00:00.000Z",
+      "existing": [],
+      "input": {
+        "body": "🚀🎉"
+      },
+      "id": "20260301-120000-note",
+      "file": "---\nid: 20260301-120000-note\ncreated: 2026-03-01T12:00:00.000Z\nkind: note\ntags: []\n---\n🚀🎉"
+    },
+    {
+      "now": "2026-03-01T12:00:00.000Z",
+      "existing": [],
+      "input": {
+        "body": ""
+      },
+      "id": "20260301-120000-note",
+      "file": "---\nid: 20260301-120000-note\ncreated: 2026-03-01T12:00:00.000Z\nkind: note\ntags: []\n---\n"
+    },
+    {
+      "now": "2026-03-01T12:00:00.000Z",
+      "existing": [],
+      "input": {
+        "body": "\nbody starts on line two"
+      },
+      "id": "20260301-120000-note",
+      "file": "---\nid: 20260301-120000-note\ncreated: 2026-03-01T12:00:00.000Z\nkind: note\ntags: []\n---\n\nbody starts on line two"
+    },
+    {
+      "now": "2026-03-01T12:00:00.000Z",
+      "existing": [],
+      "input": {
+        "body": "Zażółć gęślą jaźń — Straße İstanbul Kelvin"
+      },
+      "id": "20260301-120000-za-g-l-ja-stra-e-i-stanbul-kelvin",
+      "file": "---\nid: 20260301-120000-za-g-l-ja-stra-e-i-stanbul-kelvin\ncreated: 2026-03-01T12:00:00.000Z\nkind: note\ntags: []\n---\nZażółć gęślą jaźń — Straße İstanbul Kelvin"
+    },
+    {
+      "now": "2026-03-01T12:00:00.000Z",
+      "existing": [],
+      "input": {
+        "body": "東京 meeting @ 10:30 (re: Q4)"
+      },
+      "id": "20260301-120000-meeting-10-30-re-q4",
+      "file": "---\nid: 20260301-120000-meeting-10-30-re-q4\ncreated: 2026-03-01T12:00:00.000Z\nkind: note\ntags: []\n---\n東京 meeting @ 10:30 (re: Q4)"
+    },
+    {
+      "now": "2026-03-01T12:00:00.000Z",
+      "existing": [
+        "20260301-120000-dup.md",
+        "20260301-120000-dup-2.md",
+        "other.md"
+      ],
+      "input": {
+        "body": "dup"
+      },
+      "id": "20260301-120000-dup-3",
+      "file": "---\nid: 20260301-120000-dup-3\ncreated: 2026-03-01T12:00:00.000Z\nkind: note\ntags: []\n---\ndup"
+    },
+    {
+      "now": "2026-07-04T06:05:04.999Z",
+      "existing": [],
+      "input": {
+        "body": "everything set\n\nwith a body\n",
+        "kind": "task",
+        "tags": [],
+        "deadline": "2026-07-10",
+        "done": false,
+        "alert": "2026-07-05T09:00:00Z"
+      },
+      "id": "20260704-070504-everything-set",
+      "file": "---\nid: 20260704-070504-everything-set\ncreated: 2026-07-04T06:05:04.999Z\nkind: task\ntags: []\ndeadline: 2026-07-10\ndone: false\nalert: 2026-07-05T09:00:00Z\n---\neverything set\n\nwith a body\n"
+    },
+    {
+      "now": "2026-07-04T06:05:04.000Z",
+      "existing": [],
+      "input": {
+        "body": "trailing newline\n",
+        "tags": [
+          "a b",
+          "c"
+        ]
+      },
+      "id": "20260704-070504-trailing-newline",
+      "file": "---\nid: 20260704-070504-trailing-newline\ncreated: 2026-07-04T06:05:04.000Z\nkind: note\ntags: [a b, c]\n---\ntrailing newline\n"
+    }
+  ],
+  "roundTrip": [
+    {
+      "input": "---\nid: 20261009-222436-talk-to-triss-about-an-agency\ncreated: 2026-10-09T21:24:36.704Z\nkind: task\ntags: []\n---\ntalk to Triss about an agency",
+      "output": "---\nid: 20261009-222436-talk-to-triss-about-an-agency\ncreated: 2026-10-09T21:24:36.704Z\nkind: task\ntags: []\n---\ntalk to Triss about an agency",
+      "body": "talk to Triss about an agency",
+      "keys": [
+        "id",
+        "created",
+        "kind",
+        "tags"
+      ],
+      "extraLines": []
+    },
+    {
+      "input": "---\nid: x\ncreated: 2026-01-01T00:00:00.000Z\nkind: knowledge\ntags: [ai, tools]\nenriched: 2026-01-01T00:03:00Z\nalerted: true\nsource: https://example.com/a?b=c\n---\nbody\n\n## Related\n- [[20260101-000000-other]]\n",
+      "output": "---\nid: x\ncreated: 2026-01-01T00:00:00.000Z\nkind: knowledge\ntags: [ai, tools]\nenriched: 2026-01-01T00:03:00Z\nalerted: true\nsource: https://example.com/a?b=c\n---\nbody\n\n## Related\n- [[20260101-000000-other]]\n",
+      "body": "body\n\n## Related\n- [[20260101-000000-other]]\n",
+      "keys": [
+        "id",
+        "created",
+        "kind",
+        "tags",
+        "enriched",
+        "alerted",
+        "source"
+      ],
+      "extraLines": []
+    },
+    {
+      "input": "---\nkind: task\ndone: true\nid: out-of-order\ntags: [z]\ncreated: c\nzeta: 1\nalpha: 2\n---\nreordered",
+      "output": "---\nid: out-of-order\ncreated: c\nkind: task\ntags: [z]\ndone: true\nzeta: 1\nalpha: 2\n---\nreordered",
+      "body": "reordered",
+      "keys": [
+        "kind",
+        "done",
+        "id",
+        "tags",
+        "created",
+        "zeta",
+        "alpha"
+      ],
+      "extraLines": []
+    },
+    {
+      "input": "---\nid: extra\n# a comment line\n  - indented list item\n\nnot a key line\n---\nextra lines",
+      "output": "---\nid: extra\n# a comment line\n  - indented list item\n\nnot a key line\n---\nextra lines",
+      "body": "extra lines",
+      "keys": [
+        "id"
+      ],
+      "extraLines": [
+        "# a comment line",
+        "  - indented list item",
+        "",
+        "not a key line"
+      ]
+    },
+    {
+      "input": "plain text, no frontmatter",
+      "output": "---\n\n---\nplain text, no frontmatter",
+      "body": "plain text, no frontmatter",
+      "keys": [],
+      "extraLines": []
+    },
+    {
+      "input": "---\r\nid: crlf\r\n---\r\nwindows",
+      "output": "---\n\n---\n---\r\nid: crlf\r\n---\r\nwindows",
+      "body": "---\r\nid: crlf\r\n---\r\nwindows",
+      "keys": [],
+      "extraLines": []
+    },
+    {
+      "input": "---\nid: unclosed\nbody without closing",
+      "output": "---\n\n---\n---\nid: unclosed\nbody without closing",
+      "body": "---\nid: unclosed\nbody without closing",
+      "keys": [],
+      "extraLines": []
+    },
+    {
+      "input": "---\n---\nempty block is not closed at index 4",
+      "output": "---\n\n---\n---\n---\nempty block is not closed at index 4",
+      "body": "---\n---\nempty block is not closed at index 4",
+      "keys": [],
+      "extraLines": []
+    },
+    {
+      "input": "---\nid: trailing   \nkey:no-space\nkey2:  two spaces\nkey3:\ttab\nempty:\n---\nvalues",
+      "output": "---\nid: trailing\nkey: no-space\nkey2: two spaces\nkey3: tab\nempty: \n---\nvalues",
+      "body": "values",
+      "keys": [
+        "id",
+        "key",
+        "key2",
+        "key3",
+        "empty"
+      ],
+      "extraLines": []
+    },
+    {
+      "input": "---\ndup: first\nother: x\ndup: second\n---\nduplicate keys",
+      "output": "---\ndup: second\nother: x\n---\nduplicate keys",
+      "body": "duplicate keys",
+      "keys": [
+        "dup",
+        "other"
+      ],
+      "extraLines": []
+    },
+    {
+      "input": "---\nl1: [a, , b]\nl2: [ ]\nl3: []\nl4: [ x ,y ]\nl5: [\nl6: ]\nl7: [single]\n---\nlists",
+      "output": "---\nl1: [a, , b]\nl2: []\nl3: []\nl4: [x, y]\nl5: [\nl6: ]\nl7: [single]\n---\nlists",
+      "body": "lists",
+      "keys": [
+        "l1",
+        "l2",
+        "l3",
+        "l4",
+        "l5",
+        "l6",
+        "l7"
+      ],
+      "extraLines": []
+    },
+    {
+      "input": "---\nb1: true\nb2: false\nb3: True\nb4: \"true\"\nb5:  true  \n---\nbools",
+      "output": "---\nb1: true\nb2: false\nb3: True\nb4: \"true\"\nb5: true\n---\nbools",
+      "body": "bools",
+      "keys": [
+        "b1",
+        "b2",
+        "b3",
+        "b4",
+        "b5"
+      ],
+      "extraLines": []
+    },
+    {
+      "input": "---\nid: u\n---\nZażółć 🚀 東京\n---\nsecond fence in body\n",
+      "output": "---\nid: u\n---\nZażółć 🚀 東京\n---\nsecond fence in body\n",
+      "body": "Zażółć 🚀 東京\n---\nsecond fence in body\n",
+      "keys": [
+        "id"
+      ],
+      "extraLines": []
+    },
+    {
+      "input": "---\nnbsp: value\nfeff: ﻿v﻿\nnel: v\n---\nunicode whitespace",
+      "output": "---\nnbsp: value\nfeff: v\nnel: v\n---\nunicode whitespace",
+      "body": "unicode whitespace",
+      "keys": [
+        "nbsp",
+        "feff",
+        "nel"
+      ],
+      "extraLines": []
+    },
+    {
+      "input": "---\ncr: b\r\ncr2:\r\nls: a b\nls2: \n---\nline terminators",
+      "output": "---\ncr2: \nls2: \ncr: b\r\nls: a b\n---\nline terminators",
+      "body": "line terminators",
+      "keys": [
+        "cr2",
+        "ls2"
+      ],
+      "extraLines": [
+        "cr: b\r",
+        "ls: a b"
+      ]
+    },
+    {
+      "input": "---\n1bad: x\n_ok: y\nkey-with-dash_9: z\nbad key: w\n---\nkey shapes",
+      "output": "---\n_ok: y\nkey-with-dash_9: z\n1bad: x\nbad key: w\n---\nkey shapes",
+      "body": "key shapes",
+      "keys": [
+        "_ok",
+        "key-with-dash_9"
+      ],
+      "extraLines": [
+        "1bad: x",
+        "bad key: w"
+      ]
+    },
+    {
+      "input": "---\nid: a\n---\n",
+      "output": "---\nid: a\n---\n",
+      "body": "",
+      "keys": [
+        "id"
+      ],
+      "extraLines": []
+    },
+    {
+      "input": "",
+      "output": "---\n\n---\n",
+      "body": "",
+      "keys": [],
+      "extraLines": []
+    }
+  ],
+  "update": [
+    {
+      "file": "---\nid: t\ncreated: 2026-01-01T00:00:00.000Z\nkind: task\ntags: [work]\nalerted: true\nalert: 2026-01-02T09:00:00Z\n---\ndo the thing",
+      "patch": {
+        "setFrontmatter": [
+          [
+            "done",
+            true
+          ]
+        ]
+      },
+      "output": "---\nid: t\ncreated: 2026-01-01T00:00:00.000Z\nkind: task\ntags: [work]\ndone: true\nalert: 2026-01-02T09:00:00Z\nalerted: true\n---\ndo the thing"
+    },
+    {
+      "file": "---\nid: t\ncreated: c\nkind: task\ntags: []\ndone: true\n---\nundo me",
+      "patch": {
+        "setFrontmatter": [
+          [
+            "done",
+            null
+          ]
+        ]
+      },
+      "output": "---\nid: t\ncreated: c\nkind: task\ntags: []\n---\nundo me"
+    },
+    {
+      "file": "---\nid: k\ncreated: c\nkind: knowledge\ntags: []\nenriched: 2026-01-01T00:03:00Z\n# keep me\n---\nold body",
+      "patch": {
+        "replaceBody": "new body\nline 2"
+      },
+      "output": "---\nid: k\ncreated: c\nkind: knowledge\ntags: []\nenriched: 2026-01-01T00:03:00Z\n# keep me\n---\nnew body\nline 2"
+    },
+    {
+      "file": "plain text, no frontmatter",
+      "patch": {
+        "setFrontmatter": [
+          [
+            "done",
+            true
+          ],
+          [
+            "zeta",
+            "z"
+          ],
+          [
+            "deadline",
+            "2026-01-01"
+          ]
+        ]
+      },
+      "output": "---\ndeadline: 2026-01-01\ndone: true\nzeta: z\n---\nplain text, no frontmatter"
+    },
+    {
+      "file": "---\nid: a\n---\nbody",
+      "patch": {
+        "setFrontmatter": [
+          [
+            "tags",
+            [
+              "x",
+              "y"
+            ]
+          ]
+        ],
+        "appendBody": "\nappended"
+      },
+      "output": "---\nid: a\ntags: [x, y]\n---\nbody\nappended"
+    }
+  ]
+}

@@ -38,3 +38,11 @@ scripts/scratch/
 # Screenshot harness output (scripts/shoot.sh) — root dir only: committed
 # screenshots live under docs/screenshots/.
 /screenshots/
+
+# iOS app: generated Xcode project (source of truth is ios/project.yml) and
+# build output.
+ios/Stash.xcodeproj/
+ios/build/
+ios/StashCore/.build/
+ios/StashCore/.swiftpm/
+xcuserdata/
