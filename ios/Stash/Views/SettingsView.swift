@@ -28,7 +28,7 @@ struct SettingsView: View {
                 } header: {
                     SectionLabel(text: "Vault")
                 } footer: {
-                    Text("Notes live in iCloud Drive as plain markdown, shared with the Mac. stash downloads every note when it opens, so open it once on Wi-Fi before you lose signal.")
+                    Text("Notes live in iCloud Drive as plain markdown, shared with the Mac. stash downloads every note when it opens, so open it once on Wi-Fi before you lose signal. The home-screen widget shows your tasks as of the last time stash ran; iOS also refreshes it in the background now and then.")
                 }
                 .listRowBackground(Theme.cell)
 

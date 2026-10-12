@@ -16,6 +16,7 @@ final class VaultStore {
     var errorMessage: String?
 
     private var allNames: Set<String> = []
+    private var outdated = 0
     private static let bookmarkKey = "vaultBookmark"
 
     init() {
@@ -155,8 +156,10 @@ final class VaultStore {
             if snap.notes != notes { notes = snap.notes }
             if snap.pending != pending { pending = snap.pending }
             allNames = snap.allNames
+            outdated = snap.outdated
             lastLoaded = Date()
             lastReloadFailed = false
+            WidgetBridge.publish(notes)
         } catch {
             // Report once, not on every poll.
             if !lastReloadFailed {
@@ -167,6 +170,20 @@ final class VaultStore {
         isLoading = false
         if reloadQueued {
             reloadQueued = false
+            await reload()
+        }
+    }
+
+    /// Background app refresh (BGAppRefreshTask, scheduled by StashApp):
+    /// rescan so the widget catches Mac edits without the app being opened.
+    /// iCloud only refreshes files someone asks for, so the first scan
+    /// requests downloads of anything out of date; if there was any, wait a
+    /// moment and scan again. Stays well inside the ~30s iOS allows.
+    func backgroundRefresh() async {
+        guard folder != nil else { return }
+        await reload()
+        if !pending.isEmpty || outdated > 0 {
+            try? await Task.sleep(for: .seconds(8))
             await reload()
         }
     }
@@ -208,6 +225,7 @@ final class VaultStore {
             if let i = notes.firstIndex(where: { $0.fileName == note.fileName }) {
                 notes[i] = Note(fileName: note.fileName, text: written)
             }
+            WidgetBridge.publish(notes)
         } catch {
             if let i = notes.firstIndex(where: { $0.fileName == note.fileName }) { notes[i] = before }
             errorMessage = "Couldn't save \(note.title): \(error.localizedDescription)"
@@ -230,6 +248,7 @@ final class VaultStore {
             let note = Note(fileName: fileName, text: text)
             notes.append(note)
             allNames.insert(fileName)
+            WidgetBridge.publish(notes)
             return note
         } catch {
             errorMessage = "Couldn't save the note: \(error.localizedDescription)"

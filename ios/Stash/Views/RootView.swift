@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import StashCore
 
@@ -25,14 +26,22 @@ struct RootView: View {
     @State private var showSettings = false
     @State private var chat: ChatModel?
     @State private var presentedChat: ChatModel?
+    /// Owned here, not in HomeView, so a widget link can pop to the list.
+    @State private var router = Router()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         @Bindable var store = store
         Group {
             if store.folder == nil {
                 OnboardingView()
+            } else if isWidgetGallery {
+                #if DEBUG
+                WidgetGallery()
+                #endif
             } else {
                 HomeView(
+                    router: router,
                     section: $section,
                     onCapture: { capture = CaptureRequest(kind: $0) },
                     onSettings: { showSettings = true },
@@ -45,6 +54,16 @@ struct RootView: View {
         // By item, not isPresented: the model is created in the same update
         // that presents it, and an isPresented closure can still see nil.
         .fullScreenCover(item: $presentedChat) { ChatView(model: $0) }
+        // Widget: stash://tasks (tap the tasks) and stash://new (the +).
+        .onOpenURL { open($0) }
+        // The small widget's + leaves its request in the App Group instead.
+        .onChange(of: scenePhase, initial: true) { _, phase in
+            if phase == .active, let url = AppGroup.takeRoute() { open(url) }
+        }
+        // …or, when iOS runs that intent inside the already-active app.
+        .onReceive(NotificationCenter.default.publisher(for: .stashPendingRoute).receive(on: DispatchQueue.main)) { _ in
+            if let url = AppGroup.takeRoute() { open(url) }
+        }
         .alert("Something went wrong", isPresented: Binding(
             get: { store.errorMessage != nil },
             set: { if !$0 { store.errorMessage = nil } }
@@ -69,8 +88,49 @@ struct RootView: View {
                 if let prompt = SampleVault.argument("-chatPrompt") { await chat?.send(prompt) }
             default: break
             }
+            // `-openURL stash://…`: route as a widget tap would, after the
+            // screen above is up (exercises close-then-route).
+            if let raw = SampleVault.argument("-openURL"), let url = URL(string: raw) {
+                try? await Task.sleep(for: .seconds(1.5))
+                open(url)
+            }
         }
         #endif
+    }
+
+    private var isWidgetGallery: Bool {
+        #if DEBUG
+        SampleVault.screen == "widgets"
+        #else
+        false
+        #endif
+    }
+
+    /// Handles stash:// links: `tasks` shows the Tasks list from the top,
+    /// `new?kind=task` opens capture. Anything on screen is closed first.
+    private func open(_ url: URL) {
+        guard url.scheme == "stash" else { return }
+        let somethingPresented = capture != nil || showSettings || presentedChat != nil
+        capture = nil
+        showSettings = false
+        presentedChat = nil
+        router.path = []
+        switch url.host() {
+        case "tasks":
+            section = "tasks"
+        case "new":
+            let raw = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                .queryItems?.first { $0.name == "kind" }?.value
+            let kind = raw.flatMap(NoteKind.init(rawValue:)) ?? .task
+            section = kind == .task ? "tasks" : kind == .note ? "notes" : "knowledge"
+            Task {
+                // A sheet can't present while another is still dismissing.
+                if somethingPresented { try? await Task.sleep(for: .milliseconds(450)) }
+                capture = CaptureRequest(kind: kind)
+            }
+        default:
+            break
+        }
     }
 
     /// The chat model lives here, not in the cover, so closing chat keeps
@@ -92,13 +152,13 @@ struct RootView: View {
 /// - one floating glass + in the thumb zone for the frequent action, capture.
 /// Notes push over everything on a single navigation stack.
 struct HomeView: View {
+    @Bindable var router: Router
     @Binding var section: String
     let onCapture: (NoteKind) -> Void
     let onSettings: () -> Void
     let onChat: (() -> Void)?
 
     @Environment(VaultStore.self) private var store
-    @State private var router = Router()
     @State private var query = ""
     @State private var undo: CompletedTask?
     @AppStorage("taskCategory") private var category = TaskList.allCategories

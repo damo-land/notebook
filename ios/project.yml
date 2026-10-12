@@ -23,10 +23,18 @@ targets:
     platform: iOS
     sources:
       - path: Stash
+        excludes: [Info.plist, Stash.entitlements]
+      - path: Shared
+    entitlements:
+      path: Stash/Stash.entitlements   # generated from these properties
+      properties:
+        com.apple.security.application-groups: [group.land.damo.stash]
     dependencies:
       - package: StashCore
+      - target: StashWidget
     settings:
       base:
+        INFOPLIST_FILE: Stash/Info.plist
         PRODUCT_BUNDLE_IDENTIFIER: land.damo.stash.ios
         PRODUCT_NAME: Stash
         TARGETED_DEVICE_FAMILY: "1"
@@ -39,6 +47,31 @@ targets:
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
         INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
+  # Home-screen widget (small / medium / large). Reads only the task
+  # snapshot the app writes into the shared App Group container; it never
+  # touches the iCloud vault itself.
+  StashWidget:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: StashWidget
+        excludes: [Info.plist, StashWidget.entitlements]
+      - path: Shared
+    entitlements:
+      path: StashWidget/StashWidget.entitlements   # generated from these properties
+      properties:
+        com.apple.security.application-groups: [group.land.damo.stash]
+    dependencies:
+      - package: StashCore
+    settings:
+      base:
+        INFOPLIST_FILE: StashWidget/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: land.damo.stash.ios.widget
+        PRODUCT_NAME: StashWidget
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: stash
+        SKIP_INSTALL: YES
 schemes:
   Stash:
     build:

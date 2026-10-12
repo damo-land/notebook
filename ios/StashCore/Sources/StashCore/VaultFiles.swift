@@ -20,6 +20,8 @@ public struct VaultSnapshot: Sendable {
     public var pending: [String] = []
     /// Every note file name, local or not — for id collision checks.
     public var allNames: Set<String> = []
+    /// Notes read from an older local copy while iCloud fetches a newer one.
+    public var outdated = 0
 }
 
 public enum VaultFiles {
@@ -42,6 +44,7 @@ public enum VaultFiles {
             let status = values?.ubiquitousItemDownloadingStatus
             if values?.isUbiquitousItem == true, status != .current {
                 try? FileManager.default.startDownloadingUbiquitousItem(at: item)
+                if status == .downloaded { snap.outdated += 1 }
             }
             if status == .notDownloaded {
                 snap.pending.append(name)

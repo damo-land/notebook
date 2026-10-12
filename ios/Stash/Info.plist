@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Partial Info.plist: only the keys GENERATE_INFOPLIST_FILE can't express
+     (arrays). Xcode merges it with the generated one; the rest of the keys
+     are INFOPLIST_KEY_* settings in project.yml. -->
+<plist version="1.0">
+<dict>
+	<!-- stash://tasks and stash://new?kind=task, opened by the widget. -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>land.damo.stash.ios</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>stash</string>
+			</array>
+		</dict>
+	</array>
+	<!-- Background refresh: rescan the vault so the widget catches Mac edits. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>fetch</string>
+	</array>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>land.damo.stash.ios.refresh</string>
+	</array>
+</dict>
+</plist>

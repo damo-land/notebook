@@ -7,6 +7,11 @@ works offline). It reads and writes the **same vault
 folder** as the Mac app, in the same file format, synced by iCloud Drive. No
 server, no account. Works offline once the notes have downloaded.
 
+A home-screen widget (small / medium / large) shows open tasks — due first,
+or newest first, optionally one category (long-press → Edit Widget). Tap the
+tasks to open the list, tap + to add a task. It shows tasks as of the last
+time the app ran; iOS also runs a background refresh now and then.
+
 Enrichment stays on the Mac — a `knowledge` note captured on the phone is
 enriched when the Mac app sees it arrive. Notes refresh live while the app is
 open (folder watcher, plus a 15s check for in-place edits).
@@ -39,7 +44,10 @@ open Stash.xcodeproj
 ```
 
 Plug the iPhone in (or pair it over Wi-Fi), select it as the run
-destination, and press Run. Signing is automatic with team `23Q8MBM5MM`; the
+destination, and press Run. The app and widget share an App Group
+(`group.land.damo.stash`); if the first device build complains about it,
+open the Stash target → Signing & Capabilities once so Xcode registers the
+group for your team, then Run again. Signing is automatic with team `23Q8MBM5MM`; the
 first run on a new phone asks you to trust the developer under Settings →
 General → VPN & Device Management. Developer Mode must be on (Settings →
 Privacy & Security → Developer Mode).
@@ -65,8 +73,10 @@ Simulator without iCloud: launch with a seeded throwaway vault —
 xcrun simctl launch booted land.damo.stash.ios -sampleVault -screen notes
 ```
 
-(`-screen`: `tasks`, `notes`, `knowledge`, `detail`, `capture`, `settings`,
-`chat`; Debug builds only.)
+(`-screen`: `tasks`, `notes`, `knowledge`, `detail`, `edit`, `taskdetail`,
+`undo`, `capture`, `capture-knowledge`, `settings`, `chat`, `onboarding`,
+`widgets` — the last renders the widget's three sizes; Debug builds only.
+`-openURL stash://new?kind=task` routes as a widget tap would.)
 
 Chat can't run in the simulator on a Mac older than macOS 26. `-fakeChat`
 swaps in a stand-in that answers with the same tool output the real model
@@ -93,3 +103,5 @@ xcrun simctl launch booted land.damo.stash.ios -vaultPath "$HOME/Library/Mobile 
 | `Stash/VaultStore.swift` | App state, folder bookmark, optimistic writes |
 | `Stash/Views/` | Tasks, Notes/Knowledge, note detail/editor, capture, settings, chat |
 | `Stash/Chat/` | Chat model; Apple Foundation Models engine + tools; debug fake engine |
+| `StashWidget/` | Widget extension: timeline provider, widget definition |
+| `Shared/` | Compiled into app and widget: palette, App Group, widget views + intents |

@@ -104,7 +104,7 @@ struct TaskRow: View {
                         .strikethrough(done, color: .secondary)
                         .foregroundStyle(done ? .secondary : .primary)
                     if !done, task.deadline != nil || !task.tags.isEmpty {
-                        Meta.text([task.deadline.map(Meta.deadline), Meta.tags(task.tags)])
+                        Meta.text([task.deadline.map { Meta.deadline($0) }, Meta.tags(task.tags)])
                             .font(.footnote)
                             .lineLimit(1)
                     }

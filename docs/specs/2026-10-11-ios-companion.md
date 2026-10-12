@@ -169,3 +169,21 @@ ios/
     line spacing; no duplicate title in the nav bar.
   - Capture is a composer (kind chips, large field, due/category chips), not
     a grouped form; Settings explanations are section footers.
+
+### T8: Home-screen widget
+- Status: built; simulator-verified except what only a home screen or device can show (see below).
+- Decisions: the widget never opens the vault (folder access belongs to the
+  app); the app publishes a small JSON snapshot of open tasks to the App
+  Group (`group.land.damo.stash`) after every scan or change and reloads
+  timelines only when it changed. Per-widget settings: order (due first —
+  default — or newest) and one optional category. Taps: anywhere →
+  `stash://tasks`; + → `stash://new?kind=task` (a link on medium/large; on
+  small an `openAppWhenRun` intent that leaves the route in the App Group,
+  since small widgets allow one link). Background app refresh rescans so Mac
+  edits reach the widget — iOS decides when.
+- Verified here: snapshot model + day-label rollover (`swift test`); App
+  Group container + snapshot written on launch; both routes (`-openURL`) and
+  the intent's App Group round-trip; all three sizes light/dark (`-screen
+  widgets`); no colour except the + across every screen.
+- Not verifiable here: the widget on a real home screen, the small widget's
+  + end to end, background refresh firing, App Group provisioning on device.
