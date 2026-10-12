@@ -52,7 +52,8 @@ first run on a new phone asks you to trust the developer under Settings →
 General → VPN & Device Management. Developer Mode must be on (Settings →
 Privacy & Security → Developer Mode).
 
-For TestFlight instead: Product → Archive → Distribute App → TestFlight.
+For TestFlight / the App Store: see [AppStore.md](AppStore.md) — identifiers,
+the "New App" form, upload steps and the listing copy.
 
 ## Develop
 
