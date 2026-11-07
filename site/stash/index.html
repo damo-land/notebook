@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>stash: notes and tasks in plain text</title>
+<meta name="description" content="A small, quiet app for notes, tasks and things worth keeping. Every note is a plain markdown file in a folder you own. Works offline, no account.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23131311'/%3E%3Crect x='11' y='11' width='10' height='10' fill='%232337FF'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Funnel+Display:wght@500;600&amp;family=Funnel+Sans:wght@400;500;600&amp;display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #F6F5F1;
+    --ink: #131311;
+    --faded: #6F6E67;
+    --hair: rgba(19, 19, 17, 0.16);
+    --blue: #2337FF;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #0F0F0D;
+      --ink: #F2F1EC;
+      --faded: #8E8D85;
+      --hair: rgba(242, 241, 236, 0.16);
+    }
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "Funnel Sans", system-ui, sans-serif;
+    font-size: 16px;
+    line-height: 1.55;
+    padding: 48px 24px 96px;
+  }
+  main { max-width: 640px; margin: 0 auto; }
+  .wordmark {
+    font-family: "Funnel Display", sans-serif;
+    font-weight: 600;
+    font-size: 28px;
+    letter-spacing: -0.02em;
+    display: inline-flex;
+    align-items: baseline;
+  }
+  .stop {
+    display: inline-block;
+    width: 0.15em;
+    height: 0.15em;
+    background: var(--blue);
+    margin-left: 0.08em;
+  }
+  h1 {
+    font-family: "Funnel Display", sans-serif;
+    font-weight: 600;
+    font-size: 36px;
+    line-height: 1.15;
+    letter-spacing: -0.01em;
+    margin-top: 56px;
+  }
+  h2 {
+    font-family: "Funnel Display", sans-serif;
+    font-weight: 600;
+    font-size: 20px;
+    margin-top: 48px;
+  }
+  p { margin-top: 14px; }
+  p.faded { color: var(--faded); }
+  hr { border: 0; border-top: 1px solid var(--hair); margin-top: 20px; }
+  ul { margin-top: 14px; padding-left: 0; list-style: none; }
+  li { padding: 12px 0; border-top: 1px solid var(--hair); }
+  li:first-child { border-top: 0; }
+  li strong { font-family: "Funnel Display", sans-serif; font-weight: 600; display: block; }
+  li span { color: var(--faded); }
+  a {
+    color: var(--ink);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    text-transform: lowercase;
+  }
+  a:hover { color: var(--blue); }
+  footer { margin-top: 72px; color: var(--faded); font-size: 13px; }
+  footer a { color: var(--faded); }
+</style>
+</head>
+<body>
+<main>
+  <span class="wordmark">stash<span class="stop"></span></span>
+
+  <h1>Notes pile up. Tasks drift. Keep both in one quiet place<span class="stop" style="width:0.13em;height:0.13em"></span></h1>
+  <hr>
+
+  <p>stash is a small app for notes, tasks and things worth keeping. Every note is a plain markdown file in a folder you choose, in iCloud Drive or on your iPhone. No database, no lock-in. Open your notes in any editor, today or in ten years.</p>
+
+  <p>Use stash on the Mac too? Point both apps at the same iCloud folder and they stay in step. Jot something down at your desk, read it on the train.</p>
+
+  <ul>
+    <li><strong>Tasks first</strong><span>What is due at the top. Tick it off with a tap.</span></li>
+    <li><strong>Capture in seconds</strong><span>One tap on + and you are writing.</span></li>
+    <li><strong>Ask your notes</strong><span>Chat that runs on your iPhone and never leaves it.</span></li>
+  </ul>
+
+  <h2>Support</h2>
+  <p>Your notes are files in your own folder. There is no account and nothing stored on our side. If stash shows the wrong folder, open Settings in the app and choose the folder again.</p>
+  <p>Chat needs Apple Intelligence on iOS 26 and a supported iPhone. On other devices the chat screen tells you why it is not available.</p>
+  <p>Questions or problems: <a href="mailto:xyz@damo.land">xyz@damo.land</a></p>
+
+  <h2>Privacy</h2>
+  <p>No account, no analytics, no tracking. Your notes stay in your iCloud Drive and on your devices. The full policy is one page: <a href="privacy/index.html">privacy policy →</a></p>
+
+  <footer>
+    <p>stash is not a sync service or another subscription. It reads and writes your files, that is all.</p>
+    <p>© 2026 damo.land</p>
+  </footer>
+</main>
+<script>
+  // A11: the blue square trails the cursor on damo.land marketing pages; the arrow never changes.
+  (function () {
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    if (matchMedia('(pointer: coarse)').matches) return;
+    var sq = document.createElement('div');
+    sq.style.cssText =
+      'position:fixed;width:10px;height:10px;background:#2337FF;pointer-events:none;z-index:9;' +
+      'left:0;top:0;opacity:0;transition:opacity .3s;will-change:transform;border-radius:0';
+    document.body.appendChild(sq);
+    var x = 0, y = 0, tx = 0, ty = 0, rot = 0, shown = false;
+    addEventListener('mousemove', function (e) {
+      tx = e.clientX + 14; ty = e.clientY + 16;
+      if (!shown) { sq.style.opacity = '0.9'; shown = true; }
+      var t = e.target;
+      var pointer = t.closest && t.closest('a,button');
+      sq.style.borderRadius = pointer ? '50%' : '0';
+      sq.style.width = sq.style.height = pointer ? '16px' : '10px';
+      sq.style.opacity = pointer ? '0.45' : '0.9';
+    });
+    (function tick() {
+      var dx = tx - x, dy = ty - y;
+      x += dx * 0.16; y += dy * 0.16;
+      rot += Math.min(8, Math.abs(dx) + Math.abs(dy)) * 0.6;
+      sq.style.transform = 'translate(' + x + 'px,' + y + 'px)' +
+        (sq.style.borderRadius === '0px' || sq.style.borderRadius === '0' ? ' rotate(' + rot + 'deg)' : '');
+      requestAnimationFrame(tick);
+    })();
+  })();
+</script>
+</body>
+</html>

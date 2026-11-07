@@ -1,117 +1,122 @@
-# App Store Connect — stash for iPhone
+# App Store Connect: stash for iPhone
 
-Copy-paste sheet for creating the app record, shipping TestFlight builds and
-(optionally) the public App Store listing. Field limits noted in brackets.
+What's set up for the iPhone app, and what's left. Live app record:
+https://appstoreconnect.apple.com/apps/6831952803
 
-## 1. Register the identifiers (once)
+## Done
 
-The **Bundle ID** dropdown in "New App" only lists IDs registered on the team.
-Easiest: let Xcode do it.
+**Identifiers** (Certificates, Identifiers & Profiles, team 23Q8MBM5MM)
+- App Group `group.land.damo.stash`
+- App ID `land.damo.stash.ios` (App Groups on, group assigned)
+- App ID `land.damo.stash.ios.widget` (App Groups on, group assigned)
 
-1. `cd ios && xcodegen && open Stash.xcodeproj`
-2. Xcode → Settings → Accounts: your Apple ID is signed in with team
-   *Damian Kosinski (23Q8MBM5MM)*.
-3. Select the **Stash** target → Signing & Capabilities → *Automatically
-   manage signing*, Team = Damian Kosinski. Repeat for **StashWidget**.
-   Xcode registers `land.damo.stash.ios`, `land.damo.stash.ios.widget` and the
-   App Group `group.land.damo.stash`.
-
-Manual alternative (developer.apple.com → Certificates, Identifiers &
-Profiles → Identifiers): create App Group `group.land.damo.stash`, then App IDs
-`land.damo.stash.ios` and `land.damo.stash.ios.widget`, each with the
-**App Groups** capability set to that group.
-
-## 2. "New App" dialog
+**App record**
 
 | Field | Value |
 |---|---|
-| Platforms | iOS |
-| Name [30] | `Stash — Notes & Tasks` — must be unique on the App Store; "Stash" alone is taken. Fallbacks: `Stash Vault`, `stash: notes & tasks`. The home-screen label stays **stash** (set in the app, not here). |
-| Primary Language | English (U.K.) |
-| Bundle ID | `land.damo.stash.ios` (the app, not `.widget`) |
-| SKU | `stash-ios` (internal only, never shown) |
-| User Access | Full Access (Limited only matters with other team members) |
+| Name | stash - notes and tasks ("stash" alone is taken) |
+| Subtitle | Notes and tasks in plain text |
+| Primary language | English (U.K.) |
+| Bundle ID | land.damo.stash.ios |
+| SKU | stash-ios |
+| Category | Productivity, secondary Utilities |
+| Version | 1.0 (matches `MARKETING_VERSION` in project.yml) |
+| Price | Free, all 175 countries |
+| Support / marketing URL | https://damo.land/stash |
+| Privacy policy URL | https://damo.land/stash/privacy/index.html |
+| Copyright | 2026 Damo |
+| App Review | no sign-in, contact = Damian Kosinski, notes below |
 
-## 3. Upload a build → TestFlight
+**Promotional text**
 
-1. Xcode: run destination **Any iOS Device (arm64)** → Product → **Archive**.
-2. Organizer → **Distribute App** → **App Store Connect** → Distribute.
-   Automatic signing creates the distribution profiles.
-3. App Store Connect → TestFlight: the build appears after processing
-   (~5–30 min). Encryption is pre-answered (`ITSAppUsesNonExemptEncryption = NO`).
-4. **Internal Testing** → create a group, add yourself → install the
-   **TestFlight** app on the iPhone → install stash. Internal builds need no
-   review.
-5. Every later upload needs a higher build number: bump
-   `CURRENT_PROJECT_VERSION` in `ios/project.yml`, run `xcodegen`, archive.
-   TestFlight builds expire after 90 days.
+> Jot it down, find it later. Notes and tasks live as plain markdown in your own iCloud folder, with due tasks first, a home screen widget and chat that stays on device.
 
-## 4. Public listing (only if you release on the App Store)
+**Description**
 
-**Subtitle** [30] — `Plain-text notes & tasks`
-(alt: `Notes and tasks, offline`)
-
-**Promotional text** [170]
-
-> Your notes and tasks as plain markdown in your own iCloud folder. Due-first tasks, quick capture, a home-screen widget and on-device chat. Offline and private.
-
-**Description** [4000]
-
-> stash is a calm, black-and-white home for your notes, tasks and knowledge — kept as plain markdown files in a folder you own.
+> Notes pile up. Tasks drift. stash keeps both in one quiet place.
 >
-> PLAIN FILES, YOUR FOLDER
-> Pick a folder in iCloud Drive or on your iPhone. Every note is an ordinary .md file you can open in any editor. No account, no server, no lock-in. Using stash on the Mac? Point both at the same iCloud Drive folder and they stay in step.
+> stash is a small app for notes, tasks and things worth keeping. Every note is a plain markdown file in a folder you choose, in iCloud Drive or on your iPhone. No database, no lock-in. Open your notes in any editor, today or in ten years.
 >
-> TASKS FIRST
-> Open tasks sorted by what's due, overdue at the top. Tick one off with a tap or a swipe, and undo if you slip. Filter by category, and look back at what you've completed.
+> Use stash on the Mac too? Point both apps at the same iCloud folder and they stay in step. Jot something down at your desk, read it on the train.
 >
-> CAPTURE IN SECONDS
-> One tap on + opens a clean composer: a note, a task or a piece of knowledge. Add a deadline or a category with a single chip.
+> Tasks first
+> • Open tasks sorted by what is due, overdue at the top
+> • Tap the circle or swipe to tick one off, undo if you slip
+> • Filter by category and look back at what you finished
 >
-> ASK YOUR NOTES
-> Chat with your notes using Apple's on-device model. It searches and reads your notes to answer — it works offline and nothing leaves your iPhone. (Requires iOS 26 and Apple Intelligence on a supported iPhone.)
+> Capture in seconds
+> • One tap on + and you are writing
+> • Note, task or knowledge, you pick
+> • Add a deadline or a category with a single chip
 >
-> HOME SCREEN WIDGET
-> Small, medium and large widgets show your open tasks — due first or newest first, all of them or one category. Tap + to add a task.
+> Ask your notes
+> Ask a question and stash searches and reads your notes to answer, using Apple's on-device model. It works offline and nothing leaves your iPhone. Needs Apple Intelligence on iOS 26 and a supported iPhone.
 >
-> READY FOR THE COMMUTE
-> stash downloads your notes to the phone, so they're there with no signal.
+> Home screen widget
+> Small, medium and large. Your open tasks, due first or newest first, all of them or a single category. Tap + to add a task.
 >
-> PRIVATE BY DESIGN
-> No accounts, no analytics, no tracking. Your notes stay in your iCloud Drive and on your devices.
+> What stash is not: a social app, a sync service or another subscription. It reads and writes your files, that is all.
+>
+> Private by design
+> • No account, no server, no analytics
+> • Your notes stay in your iCloud Drive and on your devices
+> • Works offline, so everything is there on the commute
 
-**Keywords** [100] — `notes,tasks,todo,markdown,vault,capture,knowledge,offline,widget,icloud,plain text,second brain`
-(no other apps' names — App Review rejects trademarks in keywords)
-
-**What's New** (first version) — `First release.`
-
-| Setting | Value |
-|---|---|
-| Category | Productivity (secondary: Utilities) |
-| Price | Free |
-| Age rating | Answer *None / No* throughout → 4+. If asked about AI/assistant features: it answers only from the user's own notes, on device. |
-| App Privacy | **Data Not Collected** (no analytics, no server; files live in the user's iCloud Drive) |
-| Copyright | `2026 Damian Kosinski` |
-| Support URL | `https://github.com/damo-land/notebook` (or a page on damo.land) |
-| Privacy Policy URL | Required — host the text below, e.g. `https://damo.land/stash/privacy` |
-| Screenshots | 6.9" iPhone, 1320 × 2868 portrait, 3–5 of: Tasks, Knowledge, a note, capture, chat |
+**Keywords** - `notes,tasks,todo,markdown,plain text,capture,knowledge,offline,widget,icloud,vault,second brain`
 
 **App Review notes**
 
-> stash keeps notes as markdown files in a folder the user chooses; there is no account or login.
-> To review: tap "Choose folder", tap "On My iPhone" (or iCloud Drive), create a new folder with the folder icon in the picker, and tap Open. Then use the + button to add notes, tasks and knowledge; tap a task's circle to complete it.
-> stash is also a companion to our macOS app, which writes to the same iCloud Drive folder — not needed to use the iPhone app.
-> Chat uses Apple's on-device Foundation Models and needs Apple Intelligence (iPhone 15 Pro or later, iOS 26). On other devices it says why it's unavailable.
-> The home-screen widget shows open tasks; its + opens the app on a new task.
+> stash keeps notes as markdown files in a folder you choose. There is no account or sign in.
+>
+> To test: tap Choose folder, pick On My iPhone (or iCloud Drive), make a new folder with the folder button in the picker and tap Open. Then use + to add notes, tasks and knowledge. Tap the circle next to a task to complete it.
+>
+> The app is also a companion to stash for Mac, which writes to the same iCloud Drive folder. You do not need the Mac app to use it.
+>
+> Chat uses Apple's on-device Foundation Models, so it needs Apple Intelligence (iPhone 15 Pro or later on iOS 26). On other devices the chat screen explains why it is unavailable.
+>
+> The home screen widget shows open tasks. Its + opens the app on a new task.
 
-## 5. Privacy policy text (to host)
+## Also done
 
-> **stash — privacy policy**
+- Build 1.0 (1) uploaded and attached to version 1.0.
+- Screenshots: 6 in the iPhone slot (1206 x 2622, Apple scales them for
+  other sizes). Originals in `store/screenshots/`. Made on the iPhone 17 Pro
+  simulator from a demo vault with `-demoAnswers` for the chat shot.
+- Support and privacy pages written in `../site/stash/` (same Full Stop
+  template as 20days).
+
+## Left to do (yours)
+
+- **Publish `site/stash/` to damo.land** so `damo.land/stash` and
+  `damo.land/stash/privacy/index.html` load. Both 404 today.
+- **Content rights, age rating, App Privacy answers.** These are declarations
+  you make. Expected answers: no third-party content; None throughout the age
+  rating (4+); App Privacy "Data Not Collected", then Publish.
+- **App Availability.** Pick countries (selecting all can add regions with
+  extra requirements, e.g. China's ICP filing).
+- **Add for Review**, then submit.
+
+## Xcode side: upload a build
+
+1. `cd ios && xcodegen && open Stash.xcodeproj`
+2. Stash and StashWidget targets, Signing & Capabilities: automatic signing,
+   team Damian Kosinski. The IDs and App Group already exist, so Xcode only
+   makes profiles.
+3. Destination **Any iOS Device (arm64)**, Product > **Archive**.
+4. Organizer > **Distribute App** > **App Store Connect** > Distribute.
+5. TestFlight: build shows after processing (5 to 30 min). Internal Testing,
+   add yourself, install from the TestFlight app.
+6. Each new upload: bump `CURRENT_PROJECT_VERSION` in project.yml, run
+   `xcodegen`, archive again.
+
+## Privacy policy text (for damo.land/stash/privacy)
+
+> **stash privacy policy**
 >
-> stash does not collect, transmit or sell any personal data. There are no accounts, analytics, advertising or tracking.
+> stash does not collect, send or sell any personal data. There are no accounts, analytics, ads or tracking.
 >
-> Your notes are markdown files in a folder you choose (for example in iCloud Drive). stash reads and writes only that folder. iCloud syncing is provided by Apple under your Apple Account.
+> Your notes are markdown files in a folder you choose, for example in iCloud Drive. stash only reads and writes that folder. iCloud sync is provided by Apple under your Apple Account.
 >
-> The optional chat feature uses Apple's on-device model; your questions and notes are processed on your iPhone and are not sent to us or any third party.
+> The optional chat uses Apple's on-device model. Your questions and notes are processed on your iPhone and are not sent to us or anyone else.
 >
 > Contact: <your support email>

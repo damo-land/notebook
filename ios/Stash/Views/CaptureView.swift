@@ -22,6 +22,9 @@ struct CaptureView: View {
     init(initialKind: NoteKind) {
         _kind = State(initialValue: initialKind)
         #if DEBUG
+        if let text = SampleVault.argument("-captureText") {
+            _text = State(initialValue: text)
+        }
         if CommandLine.arguments.contains("-captureDue") {
             _due = State(initialValue: Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: .now)))
             _category = State(initialValue: "work")
