@@ -84,20 +84,11 @@ struct ChatNotice: Error {
     let message: String
 }
 
-/// Instructions shared by every engine. Same intent as the Mac's
-/// CHAT_SYSTEM_APPEND (sidecar/src/chat.ts): look before answering, cite
-/// note ids, short plain answers, say when nothing matches.
+/// Instructions shared by every engine. The text lives in StashCore
+/// (ChatItems.instructions) next to the tool outputs it describes, so the
+/// eval harness tests exactly what ships.
 enum ChatPrompt {
     static func instructions(today: Date = .now) -> String {
-        """
-        You answer questions about the user's personal notes: tasks, notes and knowledge, kept on this phone. \
-        Today is \(today.formatted(.dateTime.weekday(.wide).day().month(.wide).year())).
-        Use the tools before answering, never answer from memory: listOpenTasks for what's left to do, \
-        searchNotes to find notes by keywords, readNote to read one in full.
-        Answer in one to three short, plain sentences. Name every task or note by its title, in words, \
-        and say when it is due if it has a deadline. After a title you may add its id in double brackets, \
-        like "Call the bank, due tomorrow [[20261009-222436-call-the-bank]]". \
-        Never reply with only ids or brackets. No preamble. If nothing matches, say so.
-        """
+        ChatItems.instructions(today: today)
     }
 }

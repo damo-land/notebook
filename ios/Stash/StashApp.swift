@@ -31,6 +31,15 @@ struct StashApp: App {
                 // black-and-white rule doesn't hinge on the AccentColor asset
                 // resolving (it stopped applying once Info.plist was merged).
                 .tint(Theme.ink)
+                #if DEBUG
+                .task {
+                    // `-chatEval [runs]`: on-device model eval (ChatEval.swift).
+                    if CommandLine.arguments.contains("-chatEval"), #available(iOS 26, *) {
+                        let runs = SampleVault.argument("-chatEval").flatMap(Int.init) ?? 2
+                        await ChatEval.run(store: store, runs: runs)
+                    }
+                }
+                #endif
         }
         .onChange(of: scenePhase, initial: true) { _, phase in
             // Live refresh only while in front; rescan on every return.

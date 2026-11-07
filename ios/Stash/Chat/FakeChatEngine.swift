@@ -36,8 +36,8 @@ final class FakeChatEngine: ChatEngine {
             answer = wantsTasks ? dueThisWeek() : found(prompt)
         } else {
             let toolOutput = wantsTasks
-                ? ChatTools.openTasks(store.notes, limit: 4)
-                : ChatTools.search(store.notes, query: prompt, limit: 3)
+                ? ChatItems.list(store.notes, group: .openTasks)
+                : ChatItems.search(store.notes, query: prompt)
             answer = "**Simulator stand-in, not Apple's model.** This is the tool output the real model would read:\n\n" + toolOutput
         }
         var shown = ""

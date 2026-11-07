@@ -20,7 +20,7 @@ final class AppleChatEngine: ChatEngine {
 
     private static func makeSession(store: VaultStore) -> LanguageModelSession {
         LanguageModelSession(
-            tools: [ListOpenTasksTool(store: store), SearchNotesTool(store: store), ReadNoteTool(store: store)],
+            tools: [ListTool(store: store), SearchTool(store: store), ReadTool(store: store)],
             instructions: ChatPrompt.instructions()
         )
     }
@@ -88,27 +88,44 @@ final class AppleChatEngine: ChatEngine {
     }
 }
 
-// MARK: - Tools (mirror the Mac's MCP server: list_tasks, search_notes, read_note)
+// MARK: - Tools
+// Names, descriptions and outputs come from StashCore.ChatItems, which the
+// eval harness runs against a real vault with small local models.
 
 @available(iOS 26, *)
-struct ListOpenTasksTool: Tool {
+struct ListTool: Tool {
     let store: VaultStore
-    let name = "listOpenTasks"
-    let description = "List the user's open tasks with deadlines and tags."
+    let name = ChatItems.listName
+    let description = ChatItems.listDescription
 
     @Generable
-    struct Arguments {}
+    enum Group {
+        case openTasks, doneTasks, notes, knowledge, everything
+    }
+
+    @Generable
+    struct Arguments {
+        @Guide(description: "Which group to list")
+        var group: Group
+    }
 
     func call(arguments: Arguments) async throws -> String {
-        ChatTools.openTasks(await store.notes)
+        let group: ChatItems.Group = switch arguments.group {
+        case .openTasks: .openTasks
+        case .doneTasks: .doneTasks
+        case .notes: .notes
+        case .knowledge: .knowledge
+        case .everything: .everything
+        }
+        return ChatItems.list(await store.notes, group: group)
     }
 }
 
 @available(iOS 26, *)
-struct SearchNotesTool: Tool {
+struct SearchTool: Tool {
     let store: VaultStore
-    let name = "searchNotes"
-    let description = "Search all notes by keywords. Returns note ids, titles and short snippets."
+    let name = ChatItems.searchName
+    let description = ChatItems.searchDescription
 
     @Generable
     struct Arguments {
@@ -117,23 +134,23 @@ struct SearchNotesTool: Tool {
     }
 
     func call(arguments: Arguments) async throws -> String {
-        ChatTools.search(await store.notes, query: arguments.query)
+        ChatItems.search(await store.notes, query: arguments.query)
     }
 }
 
 @available(iOS 26, *)
-struct ReadNoteTool: Tool {
+struct ReadTool: Tool {
     let store: VaultStore
-    let name = "readNote"
-    let description = "Read one note in full by its id."
+    let name = ChatItems.readName
+    let description = ChatItems.readDescription
 
     @Generable
     struct Arguments {
-        @Guide(description: "The note id, e.g. 20261009-222436-call-the-bank")
+        @Guide(description: "The item id, e.g. 20261009-222436-call-the-bank")
         var id: String
     }
 
     func call(arguments: Arguments) async throws -> String {
-        ChatTools.read(await store.notes, ref: arguments.id)
+        ChatItems.read(await store.notes, ref: arguments.id)
     }
 }
