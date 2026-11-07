@@ -94,8 +94,10 @@ enum ChatPrompt {
         Today is \(today.formatted(.dateTime.weekday(.wide).day().month(.wide).year())).
         Use the tools before answering, never answer from memory: listOpenTasks for what's left to do, \
         searchNotes to find notes by keywords, readNote to read one in full.
-        Cite every note you used by its id in double brackets, like [[20261009-222436-call-the-bank]].
-        Keep answers short and plain, no preamble. If nothing matches, say so.
+        Answer in one to three short, plain sentences. Name every task or note by its title, in words, \
+        and say when it is due if it has a deadline. After a title you may add its id in double brackets, \
+        like "Call the bank, due tomorrow [[20261009-222436-call-the-bank]]". \
+        Never reply with only ids or brackets. No preamble. If nothing matches, say so.
         """
     }
 }

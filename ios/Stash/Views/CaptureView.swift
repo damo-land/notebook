@@ -118,7 +118,10 @@ struct CaptureView: View {
             Button("Today") { setDue(days: 0) }
             Button("Tomorrow") { setDue(days: 1) }
             Button("In a week") { setDue(days: 7) }
-            Button("Pick a date…") { withAnimation(.snappy) { pickingDate = true } }
+            Button("Pick a date…") {
+                focus = nil // the keyboard would cover the calendar
+                withAnimation(.snappy) { pickingDate = true }
+            }
             if due != nil {
                 Divider()
                 Button("No deadline", role: .destructive) { due = nil; pickingDate = false }

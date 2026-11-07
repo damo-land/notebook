@@ -659,10 +659,15 @@ fn spawn_alert_scheduler(app: AppHandle, conn: Arc<Mutex<rusqlite::Connection>>)
 ///
 /// `watcher` is behind a Mutex so [`set_vault_dir`] can re-register the watch
 /// on the newly chosen directory.
+///
+/// `on_reindex` is the watcher's after-reindex callback (emit index-updated,
+/// dispatch enrichment), kept so [`set_vault_dir`] can start an iCloud
+/// download round for a newly chosen vault whose notes are evicted.
 struct IndexState {
     conn: Arc<Mutex<rusqlite::Connection>>,
     vault_dir: Arc<Mutex<PathBuf>>,
     watcher: Mutex<Option<notify::RecommendedWatcher>>,
+    on_reindex: Arc<dyn Fn() + Send + Sync>,
 }
 
 impl IndexState {
@@ -961,10 +966,19 @@ fn set_vault_dir(app: AppHandle, state: State<IndexState>, path: String) -> Resu
         let mut dir = state.vault_dir.lock().map_err(|e| e.to_string())?;
         std::mem::replace(&mut *dir, vault_dir.clone())
     };
-    {
+    let report = {
         let conn = state.conn.lock().map_err(|e| e.to_string())?;
-        index::reindex(&conn, &vault_dir).map_err(|e| e.to_string())?;
-    }
+        index::reindex_report(&conn, &vault_dir).map_err(|e| e.to_string())?
+    };
+    // An existing iCloud vault picked on a fresh Mac (the first-run wizard
+    // lands here) often starts out fully evicted, and no file event follows
+    // to wake the watcher: request the download now, in the background.
+    index::spawn_icloud_fetch(
+        report,
+        state.vault_dir.clone(),
+        state.conn.clone(),
+        state.on_reindex.clone(),
+    );
 
     // Re-register the file watch: stop watching the old directory (which may
     // be gone — ignore that) and watch the new one, so external edits to the
@@ -1781,9 +1795,10 @@ pub fn run() {
             let vault_dir = index::resolve_vault_dir(&app.path().home_dir()?);
             let _ = std::fs::create_dir_all(&vault_dir);
             let conn = index::open_db(&db_path)?;
-            if let Err(e) = index::reindex(&conn, &vault_dir) {
+            let initial = index::reindex_report(&conn, &vault_dir).unwrap_or_else(|e| {
                 eprintln!("index: initial reindex failed: {e}");
-            }
+                index::ReindexReport::default()
+            });
             let conn = Arc::new(Mutex::new(conn));
             // The ONE vault-dir handle: IndexState (commands, set_vault_dir),
             // the watcher thread and the enrichment worker all share it, so a
@@ -1801,12 +1816,14 @@ pub fn run() {
             // written while the app was closed.
             dispatch_enrichment(&conn, &launch_dir, &queue);
 
-            let watcher = {
+            // Runs after every background reindex: the watcher's and the
+            // iCloud download rounds' (index::spawn_icloud_fetch).
+            let on_reindex: Arc<dyn Fn() + Send + Sync> = {
                 let conn = conn.clone();
                 let vault_dir = vault_dir.clone();
                 let queue = queue.clone();
                 let app = app.handle().clone();
-                index::spawn_watcher(vault_dir.clone(), conn.clone(), move || {
+                Arc::new(move || {
                     // Views holding an index read (the tasks list) refetch on
                     // this, so an editor save shows up without a reopen.
                     use tauri::Emitter;
@@ -1822,6 +1839,11 @@ pub fn run() {
                     dispatch_enrichment(&conn, &dir, &queue)
                 })
             };
+            let watcher = index::spawn_watcher(vault_dir.clone(), conn.clone(), on_reindex.clone());
+            // Notes iCloud evicted while the app was closed: the initial scan
+            // above skipped them. Ask for them now, in the background; the
+            // index refreshes as they arrive.
+            index::spawn_icloud_fetch(initial, vault_dir.clone(), conn.clone(), on_reindex.clone());
             let watcher = match watcher {
                 Ok(w) => Some(w),
                 Err(e) => {
@@ -1837,6 +1859,7 @@ pub fn run() {
                 conn,
                 vault_dir,
                 watcher: Mutex::new(watcher),
+                on_reindex,
             });
 
             // Resident tray app: no dock icon.

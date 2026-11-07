@@ -31,6 +31,9 @@ final class VaultStore {
     }
 
     var folderName: String { folder?.lastPathComponent ?? "" }
+    /// iCloud Drive, On My iPhone, or elsewhere: a "Stash" folder under On My
+    /// iPhone looks identical by name but never reaches the Mac.
+    var folderLocation: VaultLocation { VaultLocation(path: folder?.path ?? "") }
 
     // MARK: Folder
 
@@ -62,7 +65,7 @@ final class VaultStore {
         var stale = false
         guard let url = try? URL(resolvingBookmarkData: data, bookmarkDataIsStale: &stale),
               url.startAccessingSecurityScopedResource() else {
-            errorMessage = "Lost access to the vault folder — pick it again in Settings."
+            errorMessage = "Lost access to your notes folder. Pick it again in Settings."
             return
         }
         if stale, let fresh = try? url.bookmarkData(options: .minimalBookmark, includingResourceValuesForKeys: nil, relativeTo: nil) {

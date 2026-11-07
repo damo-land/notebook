@@ -55,56 +55,81 @@ struct ChatView: View {
         .environment(router)
         .onAppear {
             model.engine.prewarm()
-            inputFocused = model.messages.isEmpty
+            #if DEBUG
+            if CommandLine.arguments.contains("-chatFocus") { inputFocused = true }
+            #endif
         }
     }
 
+    /// Scrollable, so with the keyboard up it shrinks instead of pushing
+    /// the input field under the keyboard.
     private var emptyState: some View {
-        VStack(spacing: 18) {
-            Spacer()
-            Image(systemName: "sparkles").font(.system(size: 34, weight: .light))
-            Text("Ask about your notes").font(.title2.weight(.bold))
-            Text("Runs on your iPhone with Apple's on-device model — works offline, nothing leaves the phone.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-            VStack(spacing: 8) {
-                ForEach(Self.suggestions, id: \.self) { s in
-                    Button(s) { send(s) }
-                        .buttonStyle(ChipStyle())
-                }
-            }
-            .padding(.top, 6)
-            Spacer()
-            Spacer()
-        }
-        .padding(32)
-    }
-
-    private var transcript: some View {
-        ScrollViewReader { proxy in
+        GeometryReader { geo in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 16) {
-                    ForEach(model.messages) { message in
-                        MessageView(message: message, isStreaming: model.isResponding && message.id == model.messages.last?.id)
-                            .id(message.id)
+                VStack(spacing: 18) {
+                    Image(systemName: "sparkles").font(.system(size: 34, weight: .light))
+                    Text("Ask about your notes").font(.title2.weight(.bold))
+                    Text("Runs on your iPhone with Apple's on-device model. Works offline, nothing leaves the phone.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                    VStack(spacing: 8) {
+                        ForEach(Self.suggestions, id: \.self) { s in
+                            Button(s) { send(s) }
+                                .buttonStyle(ChipStyle())
+                        }
                     }
+                    .padding(.top, 6)
                 }
-                .padding(16)
+                .padding(.horizontal, 32)
+                .padding(.vertical, 24)
+                .frame(maxWidth: .infinity, minHeight: geo.size.height)
             }
             .scrollDismissesKeyboard(.interactively)
-            .onChange(of: model.messages.last?.text) {
-                if let last = model.messages.last { proxy.scrollTo(last.id, anchor: .bottom) }
-            }
-            .environment(\.openURL, OpenURLAction { url in
-                guard let id = NoteText.noteID(from: url) else { return .systemAction }
-                if let note = store.note(linkTarget: id) {
-                    router.path.append(NoteRoute(fileName: note.fileName))
-                }
-                return .handled
-            })
         }
     }
+
+    /// The conversation. Content is never shorter than the visible area
+    /// (messages top-aligned, spare room below), so pinning to the bottom
+    /// can't push a short conversation down the screen; a long one always
+    /// shows its newest message above the input, keyboard up or down.
+    private var transcript: some View {
+        GeometryReader { geo in
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        LazyVStack(alignment: .leading, spacing: 16) {
+                            ForEach(model.messages) { message in
+                                MessageView(message: message, isStreaming: model.isResponding && message.id == model.messages.last?.id)
+                            }
+                        }
+                        .padding(16)
+                        Spacer(minLength: 0)
+                        Color.clear.frame(height: 1).id(Self.bottomID)
+                    }
+                    // geo.size is already the visible area (bars, input and
+                    // keyboard excluded); subtracting insets again made short
+                    // conversations shorter than the screen and pushed them down.
+                    .frame(minHeight: geo.size.height, alignment: .top)
+                }
+                .defaultScrollAnchor(.bottom)
+                .scrollDismissesKeyboard(.interactively)
+                .onChange(of: model.messages.count) { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
+                .onChange(of: model.messages.last?.text) { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
+                .onChange(of: geo.size.height) { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
+                .environment(\.openURL, OpenURLAction { url in
+                    guard let id = NoteText.noteID(from: url) else { return .systemAction }
+                    if let note = store.note(linkTarget: id) {
+                        router.path.append(NoteRoute(fileName: note.fileName))
+                    }
+                    return .handled
+                })
+            }
+        }
+    }
+
+    private static let bottomID = "bottom"
 
     private var inputBar: some View {
         HStack(alignment: .bottom, spacing: 10) {
@@ -145,6 +170,8 @@ private struct MessageView: View {
     let message: ChatMessage
     let isStreaming: Bool
 
+    @Environment(VaultStore.self) private var store
+
     var body: some View {
         switch message.role {
         case .user:
@@ -162,9 +189,9 @@ private struct MessageView: View {
                 }
                 .font(.subheadline)
             } else {
-                // Citations render as a compact "↗" link: the model usually
-                // names the note in its own words right before citing it.
-                Text(MarkdownRenderer.render(ChatTools.linkNoteIDs(message.text)) { _ in "↗" })
+                // Citations become links without ever hiding what the model
+                // wrote (see NoteText.chatMarkdown).
+                Text(MarkdownRenderer.render(NoteText.chatMarkdown(message.text, notes: store.notes)) { _ in nil })
                     .lineSpacing(4)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)

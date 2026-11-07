@@ -13,7 +13,7 @@ settings:
     CODE_SIGN_STYLE: Automatic
     SWIFT_VERSION: "5.0"
     MARKETING_VERSION: "1.0"
-    CURRENT_PROJECT_VERSION: "1"
+    CURRENT_PROJECT_VERSION: "2"
 packages:
   StashCore:
     path: StashCore
@@ -72,11 +72,28 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: stash
         SKIP_INSTALL: YES
+  # UI tests that drive real taps and save before/after screenshots (QA only).
+  StashUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: StashUITests
+    dependencies:
+      - target: Stash
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: land.damo.stash.ios.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TARGETED_DEVICE_FAMILY: "1"
+        TEST_TARGET_NAME: Stash
 schemes:
   Stash:
     build:
       targets:
         Stash: all
+    test:
+      targets:
+        - StashUITests
     run:
       config: Debug
     archive:

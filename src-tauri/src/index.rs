@@ -11,6 +11,7 @@ use rusqlite::{params, Connection};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -110,21 +111,40 @@ pub(crate) fn parse_note_file(text: &str) -> (HashMap<String, String>, Vec<Strin
 // Reindex (full rescan: vault -> db)
 // ---------------------------------------------------------------------------
 
+/// What one full rescan found.
+///
+/// `dataless` counts vault `.md` files whose content is not on disk: an
+/// iCloud Drive vault under "Optimize Mac Storage" can evict notes at any
+/// time, leaving the name and size listed but no bytes (see [`is_dataless`]).
+/// Those are skipped, not indexed, and the count tells the caller to have
+/// them downloaded ([`spawn_icloud_fetch`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ReindexReport {
+    pub indexed: usize,
+    pub dataless: usize,
+}
+
 /// Drops all indexed rows and rescans every `.md` file in `vault_dir`.
 /// Returns the number of notes indexed.
 pub fn reindex(conn: &Connection, vault_dir: &Path) -> Result<usize> {
+    reindex_report(conn, vault_dir).map(|r| r.indexed)
+}
+
+/// [`reindex`], also reporting how many notes were skipped as dataless.
+pub fn reindex_report(conn: &Connection, vault_dir: &Path) -> Result<ReindexReport> {
     let tx = conn.unchecked_transaction()?;
     tx.execute("DELETE FROM notes", [])?;
     tx.execute("DELETE FROM tags", [])?;
     tx.execute("DELETE FROM notes_fts", [])?;
 
     let mut count = 0usize;
+    let mut dataless = 0usize;
     let entries = match std::fs::read_dir(vault_dir) {
         Ok(e) => e,
         Err(_) => {
             // Missing vault dir -> empty index; vault stays source of truth.
             tx.commit()?;
-            return Ok(0);
+            return Ok(ReindexReport::default());
         }
     };
     for entry in entries.flatten() {
@@ -137,8 +157,27 @@ pub fn reindex(conn: &Connection, vault_dir: &Path) -> Result<usize> {
         if path.extension().and_then(|e| e.to_str()) != Some("md") || !is_regular_file {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(&path) else {
+        // Dataless check BEFORE any read: a stat never fetches content, but a
+        // read of an evicted file does not just return an error to skip. By
+        // default macOS refuses to materialise it for this process (the read
+        // fails, most likely EDEADLK "Resource deadlock avoided"), and if
+        // materialisation were ever enabled the read would instead block on
+        // the network while holding the index lock. Either way: count it,
+        // skip it, and let the caller request the download.
+        let meta = entry.metadata().ok();
+        if meta.as_ref().is_some_and(is_dataless) {
+            dataless += 1;
             continue;
+        }
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(e) => {
+                // Logged, not fatal: one unreadable note must not empty the
+                // index, but a silent skip is how evicted iCloud notes went
+                // missing unnoticed.
+                eprintln!("index: skipping unreadable note {}: {e}", path.display());
+                continue;
+            }
         };
         let (data, tags, body) = parse_note_file(&text);
         let stem = path
@@ -159,9 +198,9 @@ pub fn reindex(conn: &Connection, vault_dir: &Path) -> Result<usize> {
         // File mtime in unix millis: the sort key for the all-notes listing.
         // Integer millis compare correctly with plain ORDER BY; a file whose
         // mtime cannot be read sorts to the end rather than failing the scan.
-        let modified: i64 = std::fs::metadata(&path)
-            .and_then(|m| m.modified())
-            .ok()
+        // (Reuses the stat taken for the dataless check above.)
+        let modified: i64 = meta
+            .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
@@ -193,7 +232,138 @@ pub fn reindex(conn: &Connection, vault_dir: &Path) -> Result<usize> {
         count += 1;
     }
     tx.commit()?;
-    Ok(count)
+    Ok(ReindexReport {
+        indexed: count,
+        dataless,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Evicted (dataless) notes: iCloud Drive vaults
+// ---------------------------------------------------------------------------
+//
+// With "Optimize Mac Storage" on, macOS evicts iCloud Drive files it thinks
+// are cold: the directory entry, name and size stay, the bytes go, and the
+// file is flagged `SF_DATALESS`. A plain read does not bring it back (the
+// system default materialisation policy for a process is OFF, see
+// setiopolicy_np(3)), so before this a vault of evicted notes reindexed to an
+// empty index with no error anywhere. Now the rescan counts them and the app
+// asks iCloud to download them, then rescans until they have arrived.
+
+/// `SF_DATALESS` from <sys/stat.h>: "file is dataless object".
+const SF_DATALESS: u32 = 0x4000_0000;
+
+/// Whether a `st_flags` word marks a dataless (evicted) file. Pure, so the
+/// bit test is unit-testable without a real evicted file.
+pub fn flags_dataless(st_flags: u32) -> bool {
+    st_flags & SF_DATALESS != 0
+}
+
+/// Whether `meta` (from a stat, which never fetches content) describes a
+/// dataless file. macOS-only flag; anywhere else nothing is ever dataless.
+pub fn is_dataless(meta: &std::fs::Metadata) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::macos::fs::MetadataExt;
+        flags_dataless(meta.st_flags())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = meta;
+        false
+    }
+}
+
+/// How long to wait before each re-check after asking iCloud for the files;
+/// `None` once the schedule is spent (~13 minutes in all). Starts short, since
+/// a vault of small notes usually arrives in seconds, and backs off so an
+/// offline Mac is not rescanned every few seconds forever. A later watcher
+/// event or the next app start begins a fresh round.
+pub fn fetch_poll_delay(attempt: usize) -> Option<Duration> {
+    const SCHEDULE_SECS: [u64; 12] = [2, 3, 5, 10, 15, 30, 60, 120, 120, 120, 120, 180];
+    SCHEDULE_SECS.get(attempt).map(|s| Duration::from_secs(*s))
+}
+
+/// One download round at a time: the watcher's own rescans (which iCloud's
+/// arriving files may trigger) call [`spawn_icloud_fetch`] too, and must not
+/// stack up further `brctl` processes and poll loops.
+static FETCH_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+/// The trigger decision: start a round only when the rescan found dataless
+/// notes AND no round is already running, claiming `in_flight` if so. Takes
+/// the flag as a parameter so tests can use their own instead of the global.
+fn claim_fetch(report: ReindexReport, in_flight: &AtomicBool) -> bool {
+    report.dataless > 0 && !in_flight.swap(true, Ordering::SeqCst)
+}
+
+/// When `report` found dataless notes, asks iCloud to download the vault and,
+/// on a background thread, rescans on the [`fetch_poll_delay`] schedule until
+/// none are left, calling `on_reindex` whenever a rescan changed the count
+/// (same contract as the watcher's: views refetch, enrichment dispatches).
+///
+/// Never blocks the caller (setup runs it on the main thread). Never writes
+/// to the vault: `brctl download` only fetches content iCloud already has.
+/// The rescans do not rely on the file watcher noticing the downloads; if it
+/// does, its own rescan simply lands first.
+///
+/// `brctl download <dir>` is the request the user ran by hand to recover;
+/// whether it returns at once or waits for the transfer is undocumented, so
+/// the child is reaped on its own thread and completion is judged only by
+/// the dataless count. It only helps iCloud Drive vaults; for other cloud
+/// providers it fails harmlessly and the rounds just run out.
+pub fn spawn_icloud_fetch(
+    report: ReindexReport,
+    vault_dir: Arc<Mutex<PathBuf>>,
+    conn: Arc<Mutex<Connection>>,
+    on_reindex: Arc<dyn Fn() + Send + Sync>,
+) {
+    if !claim_fetch(report, &FETCH_IN_FLIGHT) {
+        return;
+    }
+    std::thread::spawn(move || {
+        if let Ok(dir) = vault_dir.lock().map(|d| d.clone()) {
+            eprintln!(
+                "index: {} note(s) in {} are evicted to iCloud; requesting download",
+                report.dataless,
+                dir.display()
+            );
+            match std::process::Command::new("/usr/bin/brctl")
+                .arg("download")
+                .arg(&dir)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+            {
+                Ok(mut child) => {
+                    std::thread::spawn(move || {
+                        let _ = child.wait();
+                    });
+                }
+                Err(e) => eprintln!("index: brctl download failed to start: {e}"),
+            }
+        }
+        let mut remaining = report.dataless;
+        let mut attempt = 0;
+        while let Some(delay) = fetch_poll_delay(attempt) {
+            attempt += 1;
+            std::thread::sleep(delay);
+            let Some(r) = watcher_reindex(&conn, &vault_dir) else {
+                continue;
+            };
+            if r.dataless != remaining {
+                remaining = r.dataless;
+                on_reindex();
+            }
+            if remaining == 0 {
+                break;
+            }
+        }
+        if remaining > 0 {
+            eprintln!("index: {remaining} note(s) still evicted after download rounds; retrying on next vault change or app start");
+        }
+        FETCH_IN_FLIGHT.store(false, Ordering::SeqCst);
+    });
 }
 
 /// The indexed file path for a note id, if the note is indexed.
@@ -432,10 +602,12 @@ pub fn resolve_vault_dir(home: &Path) -> PathBuf {
 /// lock so it can query the index itself. T12 uses it to queue enrichment jobs
 /// for freshly saved knowledge notes: the watcher already sees every vault
 /// write, whatever wrote it, and it fires only after the file is on disk.
+/// It is an `Arc` because the iCloud download rounds ([`spawn_icloud_fetch`])
+/// started from here call it too.
 pub fn spawn_watcher(
     vault_dir: Arc<Mutex<PathBuf>>,
     conn: Arc<Mutex<Connection>>,
-    on_reindex: impl Fn() + Send + 'static,
+    on_reindex: Arc<dyn Fn() + Send + Sync>,
 ) -> notify::Result<notify::RecommendedWatcher> {
     use notify::Watcher;
     let (tx, rx) = mpsc::channel::<()>();
@@ -453,8 +625,11 @@ pub fn spawn_watcher(
         while rx.recv().is_ok() {
             // Debounce: swallow further events until 500ms of quiet.
             while rx.recv_timeout(Duration::from_millis(500)).is_ok() {}
-            if watcher_reindex(&conn, &vault_dir) {
+            if let Some(report) = watcher_reindex(&conn, &vault_dir) {
                 on_reindex();
+                // iCloud may evict notes while the app runs; the eviction
+                // itself is a file event, so this is where it is noticed.
+                spawn_icloud_fetch(report, vault_dir.clone(), conn.clone(), on_reindex.clone());
             }
         }
     });
@@ -465,21 +640,21 @@ pub fn spawn_watcher(
 /// AT CALL TIME — never a copy captured when the watcher was spawned — so
 /// after `set_vault_dir` swaps the dir, a stray event from the previously
 /// watched directory rebuilds the index from the CURRENT vault, not the old
-/// one (a harmless refresh instead of a silent clobber).
-fn watcher_reindex(conn: &Arc<Mutex<Connection>>, vault_dir: &Arc<Mutex<PathBuf>>) -> bool {
-    let dir = match vault_dir.lock() {
-        Ok(dir) => dir.clone(),
-        Err(_) => return false,
-    };
-    match conn.lock() {
-        Ok(conn) => match reindex(&conn, &dir) {
-            Ok(_) => true,
-            Err(e) => {
-                eprintln!("index: reindex after file change failed: {e}");
-                false
-            }
-        },
-        Err(_) => false,
+/// one (a harmless refresh instead of a silent clobber). `None` when the
+/// reindex did not happen. The iCloud download rounds use it for the same
+/// reason: a vault switch mid-round must not rebuild from the old dir.
+fn watcher_reindex(
+    conn: &Arc<Mutex<Connection>>,
+    vault_dir: &Arc<Mutex<PathBuf>>,
+) -> Option<ReindexReport> {
+    let dir = vault_dir.lock().ok()?.clone();
+    let conn = conn.lock().ok()?;
+    match reindex_report(&conn, &dir) {
+        Ok(report) => Some(report),
+        Err(e) => {
+            eprintln!("index: reindex after file change failed: {e}");
+            None
+        }
     }
 }
 
@@ -490,13 +665,103 @@ fn watcher_reindex(conn: &Arc<Mutex<Connection>>, vault_dir: &Arc<Mutex<PathBuf>
 #[cfg(test)]
 mod tests {
     use super::{
-        list_all_notes, open_db, reindex, remove_note, resolve_vault_dir, search_notes,
-        vault_dir_configured, watcher_reindex, LEGACY_VAULT_DIR_NAME,
+        claim_fetch, fetch_poll_delay, flags_dataless, is_dataless, list_all_notes, open_db,
+        reindex, reindex_report, remove_note, resolve_vault_dir, search_notes,
+        vault_dir_configured, watcher_reindex, ReindexReport, LEGACY_VAULT_DIR_NAME,
     };
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     const OVERRIDE: &str = "STASH_VAULT_DIR";
+
+    /// The `SF_DATALESS` bit test. Real evicted files can't be made in a
+    /// test (it takes iCloud), so the decision is pinned on raw flag words:
+    /// the user's evicted notes showed `compressed,dataless` in `ls -lO`,
+    /// i.e. `SF_COMPRESSED` (0x20) set alongside it.
+    #[test]
+    fn flags_dataless_tests_only_the_dataless_bit() {
+        assert!(!flags_dataless(0));
+        assert!(flags_dataless(0x4000_0000));
+        assert!(flags_dataless(0x4000_0000 | 0x20));
+        // Compressed alone (a normal APFS-compressed file) is not evicted,
+        // nor is any other flag (UF_HIDDEN 0x8000).
+        assert!(!flags_dataless(0x20));
+        assert!(!flags_dataless(0x8000));
+    }
+
+    /// An ordinary on-disk note is never reported dataless, and a rescan of
+    /// a fully local vault reports zero skipped, so no download is requested.
+    #[test]
+    fn reindex_report_counts_no_dataless_in_a_local_vault() {
+        let dir = scratch_home("dataless-report");
+        let vault = dir.join("vault");
+        std::fs::create_dir_all(&vault).unwrap();
+        for name in ["a", "b"] {
+            std::fs::write(
+                vault.join(format!("{name}.md")),
+                format!("---\nid: {name}\nkind: task\ncreated: 2026-11-07T10:00:00\n---\n{name}\n"),
+            )
+            .unwrap();
+        }
+        assert!(!is_dataless(&std::fs::metadata(vault.join("a.md")).unwrap()));
+
+        let conn = open_db(&dir.join("index.db")).unwrap();
+        assert_eq!(
+            reindex_report(&conn, &vault).unwrap(),
+            ReindexReport {
+                indexed: 2,
+                dataless: 0
+            }
+        );
+        // The plain wrapper still returns just the indexed count.
+        assert_eq!(reindex(&conn, &vault).unwrap(), 2);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A download round starts only for a rescan that found dataless notes,
+    /// and never while another round holds the flag (the watcher's rescans,
+    /// possibly triggered by the downloads themselves, must not stack up
+    /// brctl processes).
+    #[test]
+    fn claim_fetch_needs_dataless_notes_and_a_free_slot() {
+        let flag = AtomicBool::new(false);
+        let none = ReindexReport {
+            indexed: 23,
+            dataless: 0,
+        };
+        let some = ReindexReport {
+            indexed: 0,
+            dataless: 23,
+        };
+        // Nothing evicted: no round, and the slot stays free.
+        assert!(!claim_fetch(none, &flag));
+        assert!(!flag.load(Ordering::SeqCst));
+        // Evicted notes and a free slot: start, claiming the slot …
+        assert!(claim_fetch(some, &flag));
+        assert!(flag.load(Ordering::SeqCst));
+        // … so a second trigger while it runs is refused.
+        assert!(!claim_fetch(some, &flag));
+        // Once the round releases the slot, the next trigger starts again.
+        flag.store(false, Ordering::SeqCst);
+        assert!(claim_fetch(some, &flag));
+    }
+
+    /// The re-check schedule starts within seconds, never shrinks, stays
+    /// bounded per step, and ends, so an offline Mac doesn't poll forever.
+    #[test]
+    fn fetch_poll_delay_backs_off_and_ends() {
+        let delays: Vec<Duration> = (0..).map_while(fetch_poll_delay).collect();
+        assert!(!delays.is_empty());
+        assert!(delays[0] <= Duration::from_secs(2));
+        assert!(delays.windows(2).all(|w| w[0] <= w[1]));
+        assert!(delays.iter().all(|d| *d <= Duration::from_secs(180)));
+        let total: Duration = delays.iter().sum();
+        assert!(total <= Duration::from_secs(20 * 60), "{total:?}");
+        assert_eq!(fetch_poll_delay(delays.len()), None);
+    }
 
     /// `remove_note` drops exactly one note's rows from all three tables
     /// (notes, tags, notes_fts) and leaves the other notes — and the files on
@@ -643,14 +908,14 @@ mod tests {
         };
 
         // Before the switch: events index the old vault (it IS the vault).
-        assert!(watcher_reindex(&conn, &shared_dir));
+        assert!(watcher_reindex(&conn, &shared_dir).is_some());
         assert_eq!(ids(&conn), vec!["old"]);
 
         // The switch (what set_vault_dir does to the shared handle) …
         *shared_dir.lock().unwrap() = new_vault.clone();
         // … and a subsequent watcher-triggered reindex — even one caused by
         // an event in the OLD directory — indexes the CURRENT vault only.
-        assert!(watcher_reindex(&conn, &shared_dir));
+        assert!(watcher_reindex(&conn, &shared_dir).is_some());
         assert_eq!(ids(&conn), vec!["new"]);
 
         let _ = std::fs::remove_dir_all(&dir);

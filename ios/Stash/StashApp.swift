@@ -13,6 +13,13 @@ struct StashApp: App {
             AppGroup.requestRoute(url)
             exit(0)
         }
+        // `-resetUI`: start from default view settings (UI tests). Passing the
+        // keys as launch arguments instead would pin them for the whole run.
+        if CommandLine.arguments.contains("-resetUI") {
+            for key in ["section", "taskCategory", "showCompleted", "notesKind"] {
+                UserDefaults.standard.removeObject(forKey: key)
+            }
+        }
         #endif
     }
 

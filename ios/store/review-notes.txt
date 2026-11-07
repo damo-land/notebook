@@ -1,0 +1,30 @@
+Hi, thanks for taking a look. Answers to your questions below.
+
+1. Screen recording
+Attached, recorded on an iPhone 15 Pro running iOS 27.2 (24B119). It starts from launching the app and shows the whole flow: choosing a folder, adding a task, completing it, notes and knowledge, opening and editing a note, search, chat and the home screen widget.
+stash has no accounts, no sign in, no content shared with other people and no paid features, so there is nothing to show for those.
+
+2. Purpose and audience
+stash is a personal notes and tasks app for people who want their notes as plain files they own, not locked inside a service. Every note is a markdown file in a folder the user picks, on the iPhone or in iCloud Drive. It is also the iPhone companion to stash for Mac: point both at the same iCloud Drive folder and notes and tasks stay in step. Using a folder of plain files instead of a private database is deliberate: other tools such as Obsidian or any text editor can read and edit the same notes, and nothing is locked into stash. The value: quick capture, a clear view of what is due, and notes you can open in any editor and keep forever.
+
+3. How to set up and test
+No login is needed and the app works on its own, without the Mac app.
+- Tap Choose folder.
+- In the picker tap On My iPhone (or iCloud Drive), tap the new folder button, name it (for example Stash) and tap Open.
+- Tap + to add a note, task or knowledge item. For a task, the chips set a deadline and a category.
+- Tap the circle next to a task to complete it. Undo appears at the bottom.
+- Switch between Tasks, Notes and Knowledge with the titles at the top. Tap an item to open it, tap Edit to change it.
+- Tap the sparkle icon to open chat and ask something like "What is due this week?". Chat needs Apple Intelligence (iPhone 15 Pro or later on iOS 26 with Apple Intelligence turned on). On other devices the chat screen explains why it is unavailable.
+- Long press the home screen and add the stash widget (small, medium or large) to see open tasks. Its + opens a new task.
+No sample files are needed, the app works with an empty folder. Any folder of .md files also works.
+
+4. External services
+None of our own. stash has no server, no analytics and no third party SDKs.
+- Apple iCloud Drive, only if the user picks a folder there, to sync files between their devices.
+- Apple Foundation Models (Apple Intelligence), on device, for the optional chat. Nothing is sent to us or to any other AI service.
+
+5. Regional differences
+None. The app works the same in every region. The only variable is chat, which depends on Apple Intelligence being available for the device, region and language.
+
+
+Thanks

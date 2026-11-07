@@ -90,7 +90,7 @@ struct TaskRow: View {
             HStack(alignment: .firstTextBaseline, spacing: 14) {
                 Button(action: onToggle) {
                     Image(systemName: done ? "checkmark.circle.fill" : "circle")
-                        .font(.system(size: 21, weight: .light))
+                        .font(.system(.title3, weight: .light)) // scales with text size
                         .foregroundStyle(done ? .secondary : .primary)
                         .frame(width: 24)
                         .contentShape(.rect.inset(by: -8))

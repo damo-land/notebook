@@ -11,6 +11,7 @@ struct SettingsView: View {
             Form {
                 Section {
                     LabeledContent("Folder", value: store.folderName)
+                    LabeledContent("Location", value: store.folderLocation.label)
                     LabeledContent("Notes on this phone", value: "\(store.notes.count)")
                     if !store.pending.isEmpty {
                         LabeledContent("Still downloading") {
@@ -28,7 +29,14 @@ struct SettingsView: View {
                 } header: {
                     SectionLabel(text: "Vault")
                 } footer: {
-                    Text("Notes live in iCloud Drive as plain markdown, shared with the Mac. stash downloads every note when it opens, so open it once on Wi-Fi before you lose signal. The home-screen widget shows your tasks as of the last time stash ran; iOS also refreshes it in the background now and then.")
+                    if store.folderLocation.syncsWithMac {
+                        Text("Notes live in iCloud Drive as plain markdown, shared with the Mac. stash downloads every note when it opens, so open it once on Wi-Fi before you lose signal. The home-screen widget shows your tasks as of the last time stash ran; iOS also refreshes it in the background now and then.")
+                    } else {
+                        Text("This folder is \(store.folderLocation == .onThisPhone ? "only on this iPhone" : "not in iCloud Drive"), so notes you add here won't reach stash on your Mac. To share them, tap Choose another folder and pick the Stash folder in iCloud Drive.")
+                            // Color.primary, not .primary: in a footer the
+                            // hierarchical .primary resolves to footer grey.
+                            .foregroundStyle(Color.primary)
+                    }
                 }
                 .listRowBackground(Theme.cell)
 

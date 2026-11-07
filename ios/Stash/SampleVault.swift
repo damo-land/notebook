@@ -56,7 +56,7 @@ enum SampleVault {
             (NewNote(body: "Start German in Duolingo", kind: .task, tags: ["learning"], deadline: date(5)), 6 * day),
             (NewNote(body: "Proposals as focus topic for Q4", kind: .task, tags: ["work"]), 4 * day),
             (NewNote(body: "Kill fiecon lab on GitHub", kind: .task, done: true), 12 * day),
-            (NewNote(body: "Try omp or pi to build a software factory\n\nhttps://github.com/example/omp — agent orchestration", kind: .task, tags: ["ai"]), 3 * day),
+            (NewNote(body: "Try omp or pi to build a software factory\n\nhttps://github.com/example/omp, agent orchestration", kind: .task, tags: ["ai"]), 3 * day),
             (NewNote(body: "Agent orchestration patterns\n\n**Fan-out / fan-in** works when subtasks are independent. Keep a *verifier* per branch.\n\nSee https://example.com/agents and [[sample-other]] for the earlier write-up.", kind: .knowledge, tags: ["ai", "agents"]), 1 * day),
             (NewNote(body: "Ideas for the commute\n\n- reread the agency notes\n- outline the Q4 proposal\n- learn 10 German words", kind: .note), 0.2 * day),
         ]

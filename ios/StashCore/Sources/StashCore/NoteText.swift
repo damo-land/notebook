@@ -41,6 +41,56 @@ public enum NoteText {
         return out
     }
 
+    /// A chat answer from the model, as markdown. Never drops what the model
+    /// wrote:
+    /// - bare note ids are bracketed first;
+    /// - `[[id]]` that names a note becomes a link labelled with the note's
+    ///   title, or "↗" when the answer already says that title in words;
+    /// - `[[some words]]` that match a note's title become a link that keeps
+    ///   those words as the label;
+    /// - anything else in brackets stays as plain text.
+    public static func chatMarkdown(_ text: String, notes: [Note]) -> String {
+        let bracketed = ChatTools.linkNoteIDs(text)
+        let spoken = bracketed.replacingOccurrences(of: #"\[\[[^\]\n]*\]\]"#, with: " ", options: .regularExpression)
+        let byTitle = notes.filter { $0.title.count > 2 }.sorted { $0.title.count > $1.title.count }
+        var out = ""
+        var rest = Substring(bracketed)
+        while let open = rest.range(of: "[[") {
+            out += rest[..<open.lowerBound]
+            let after = rest[open.upperBound...]
+            guard let close = after.range(of: "]]"), !after[..<close.lowerBound].contains("\n") else {
+                out += "[["
+                rest = after
+                continue
+            }
+            let inner = String(after[..<close.lowerBound])
+            let parts = inner.split(separator: "|", maxSplits: 1).map(String.init)
+            let target = (parts.first ?? "").trimmingCharacters(in: .whitespaces)
+            let label: String?
+            let note: Note?
+            if let n = notes.first(where: { $0.id == target || $0.fileName == target || $0.fileName == "\(target).md" }) {
+                note = n
+                let named = spoken.range(of: n.title, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+                label = parts.count > 1 ? parts[1] : (named ? "↗" : n.title)
+            } else if !target.isEmpty, let n = byTitle.first(where: { target.range(of: $0.title, options: [.caseInsensitive, .diacriticInsensitive]) != nil }) {
+                note = n
+                label = parts.count > 1 ? parts[1] : target
+            } else {
+                note = nil
+                label = nil
+            }
+            if let note, let label {
+                let encoded = note.id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? note.id
+                out += "[\(escapeLabel(label))](\(noteLinkScheme)://note/\(encoded))"
+            } else {
+                out += parts.count > 1 ? parts[1] : inner
+            }
+            rest = after[close.upperBound...]
+        }
+        out += rest
+        return renderable(out)
+    }
+
     private static let trailing: Set<Character> = [".", ",", ";", ":", "!", "?", ")", "]", "}", "`", "'", "\""]
 
     private static func bareURL(at s: Substring) -> String? {

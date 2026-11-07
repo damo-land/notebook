@@ -27,7 +27,10 @@ final class FakeChatEngine: ChatEngine {
         }
         let wantsTasks = lower.contains("due") || lower.contains("task") || lower.contains("todo")
         let answer: String
-        if CommandLine.arguments.contains("-demoAnswers") {
+        if let canned = SampleVault.argument("-fakeReply") {
+            // Replays a reply exactly as the real model gave it (to test rendering).
+            answer = canned
+        } else if CommandLine.arguments.contains("-demoAnswers") {
             // App Store screenshots: the kind of answer the real model gives,
             // built from the vault, without the stand-in banner.
             answer = wantsTasks ? dueThisWeek() : found(prompt)

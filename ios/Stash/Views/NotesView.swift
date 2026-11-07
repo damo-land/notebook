@@ -35,7 +35,7 @@ struct KindList: View {
 
     private var emptyMessage: String {
         kind == .knowledge
-            ? "Capture something worth keeping — the Mac adds tags and links once it syncs."
+            ? "Capture something worth keeping. If you use stash on the Mac, it adds tags and links once it syncs."
             : "Capture a thought with the + button, or on the Mac."
     }
 }

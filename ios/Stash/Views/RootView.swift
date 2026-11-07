@@ -161,6 +161,7 @@ struct HomeView: View {
     @Environment(VaultStore.self) private var store
     @State private var query = ""
     @State private var undo: CompletedTask?
+    @State private var keyboardUp = false
     @AppStorage("taskCategory") private var category = TaskList.allCategories
     @AppStorage("showCompleted") private var showCompleted = false
 
@@ -184,6 +185,8 @@ struct HomeView: View {
         }
         .environment(router)
         .onChange(of: section) { query = "" }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboardUp = true }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboardUp = false }
         #if DEBUG
         .task(id: store.notes.count) {
             // `-screen detail`: open the first note with a wiki-link.
@@ -281,7 +284,14 @@ struct HomeView: View {
 
     // MARK: Bottom
 
+    @ViewBuilder
     private var bottomControls: some View {
+        // Hidden while typing (search): otherwise the + rides up on the
+        // keyboard and floats over the results.
+        if !keyboardUp { bottomRow }
+    }
+
+    private var bottomRow: some View {
         HStack(alignment: .bottom, spacing: 12) {
             if let undo {
                 UndoToast(title: undo.note.title) {
@@ -311,10 +321,20 @@ struct SectionTitles: View {
             titles(.largeTitle)
             titles(.title)
             titles(.title2)
+            // Last resort at the largest text sizes: shrink rather than run
+            // off the screen (which also shoved the list against the edge).
+            titles(.title2, fixed: false)
         }
+        .dynamicTypeSize(...DynamicTypeSize.xxLarge)
     }
 
-    private func titles(_ style: Font.TextStyle) -> some View {
+    @ViewBuilder
+    private func titles(_ style: Font.TextStyle, fixed: Bool = true) -> some View {
+        let row = titleRow(style)
+        if fixed { row.fixedSize() } else { row.lineLimit(1).minimumScaleFactor(0.5) }
+    }
+
+    private func titleRow(_ style: Font.TextStyle) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 18) {
             ForEach(Self.sections, id: \.0) { id, title in
                 let selected = section == id
@@ -329,7 +349,6 @@ struct SectionTitles: View {
                 .accessibilityAddTraits(selected ? [.isHeader, .isSelected] : [])
             }
         }
-        .fixedSize()
     }
 }
 
@@ -432,8 +451,8 @@ struct OnboardingView: View {
             Image(systemName: "folder")
                 .font(.system(size: 52, weight: .light))
             VStack(spacing: 10) {
-                Text("Open your vault").font(.title.bold())
-                Text("Pick the **Stash** folder in iCloud Drive — the same folder the Mac app saves to. Your notes stay plain markdown files; nothing leaves iCloud.")
+                Text("Choose a folder").font(.title.bold())
+                Text("stash keeps every note as a plain markdown file in a folder you choose. Make a new folder on this iPhone, or pick one in iCloud Drive to sync with your other devices.")
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
             }
@@ -449,7 +468,7 @@ struct OnboardingView: View {
             }
             .buttonStyle(.plain)
             Spacer()
-            Text("On the Mac: move the vault into iCloud Drive, then point stash at it in Settings.")
+            Text("Using stash on the Mac? Pick the same iCloud Drive folder it uses.")
                 .font(.footnote)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.tertiary)
