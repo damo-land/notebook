@@ -1,7 +1,7 @@
 Hi, thanks for taking a look. Answers to your questions below.
 
 1. Screen recording
-Attached, recorded on an iPhone 15 Pro running iOS 27.2 (24B119). It starts from launching the app and shows the whole flow: choosing a folder, adding a task, completing it, notes and knowledge, opening and editing a note, search, chat and the home screen widget.
+Attached, recorded on an iPhone 15 Pro running iOS iOS 27.2 (24B119). It starts from launching the app and shows the whole flow: choosing a folder, adding a task, completing it, notes and knowledge, opening and editing a note, search, chat and the home screen widget.
 stash has no accounts, no sign in, no content shared with other people and no paid features, so there is nothing to show for those.
 
 2. Purpose and audience
